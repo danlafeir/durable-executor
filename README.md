@@ -68,7 +68,7 @@ public void reconcile() { ... }
 
 ## Requirements
 
-- Java 17+
+- Java 21+
 - Spring Boot 3.x (for the Spring module)
 
 ## Adding a new framework integration
