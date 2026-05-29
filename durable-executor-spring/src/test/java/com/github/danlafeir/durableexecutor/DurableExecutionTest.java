@@ -1,11 +1,10 @@
-package com.durableexecutor;
+package com.github.danlafeir.durableexecutor;
 
-import com.durableexecutor.annotation.Durable;
-import com.durableexecutor.config.DurableAutoConfiguration;
-import com.durableexecutor.store.DurableStore;
+import com.github.danlafeir.durableexecutor.annotation.Durable;
+import com.github.danlafeir.durableexecutor.config.DurableAutoConfiguration;
+import com.github.danlafeir.durableexecutor.store.DurableStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -16,7 +15,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.test.context.TestPropertySource;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -62,7 +60,7 @@ class DurableExecutionTest {
 
     @Test
     void recoveryReInvokesOpenExecutions(@Autowired ApplicationContext ctx) {
-        var pendingExecution = new com.durableexecutor.model.DurableExecution(
+        var pendingExecution = new com.github.danlafeir.durableexecutor.model.DurableExecution(
                 "recovery-test-id",
                 OrderService.class.getName(),
                 "processOrder",

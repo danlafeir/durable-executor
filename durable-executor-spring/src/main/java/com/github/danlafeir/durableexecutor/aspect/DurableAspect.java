@@ -1,8 +1,8 @@
-package com.durableexecutor.aspect;
+package com.github.danlafeir.durableexecutor.aspect;
 
-import com.durableexecutor.annotation.Durable;
-import com.durableexecutor.model.DurableExecution;
-import com.durableexecutor.store.DurableStore;
+import com.github.danlafeir.durableexecutor.annotation.Durable;
+import com.github.danlafeir.durableexecutor.model.DurableExecution;
+import com.github.danlafeir.durableexecutor.store.DurableStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
@@ -86,7 +86,6 @@ public class DurableAspect {
             paramTypeNames[i] = paramTypes[i].getName();
         }
 
-        // Use the user-facing class, not a CGLIB proxy subclass
         Class<?> userClass = org.springframework.util.ClassUtils.getUserClass(joinPoint.getTarget().getClass());
 
         return new DurableExecution(
