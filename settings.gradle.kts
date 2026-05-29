@@ -1,3 +1,3 @@
-rootProject.name = "durable-executor"
+rootProject.name = "spring-durable-executor"
 
-include("durable-executor-core", "durable-executor-spring")
+include("spring-durable-executor-core", "spring-durable-executor-spring")

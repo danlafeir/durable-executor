@@ -17,7 +17,7 @@ val springVersion = "6.1.6"
 val springBootVersion = "3.2.4"
 
 dependencies {
-    api(project(":durable-executor-core"))
+    api(project(":spring-durable-executor-core"))
     api("org.springframework:spring-context:$springVersion")
     api("org.springframework:spring-aop:$springVersion")
     api("org.springframework.boot:spring-boot-autoconfigure:$springBootVersion")
