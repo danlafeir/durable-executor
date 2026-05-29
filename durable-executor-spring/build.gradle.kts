@@ -15,15 +15,15 @@ repositories {
     mavenCentral()
 }
 
-val springVersion = "6.1.6"
-val springBootVersion = "3.2.4"
+val springVersion = "6.2.5"
+val springBootVersion = "3.5.3"
 
 dependencies {
     api(project(":durable-executor-core"))
     api("org.springframework:spring-context:$springVersion")
     api("org.springframework:spring-aop:$springVersion")
     api("org.springframework.boot:spring-boot-autoconfigure:$springBootVersion")
-    api("org.aspectj:aspectjweaver:1.9.21")
+    api("org.aspectj:aspectjweaver:1.9.24")
 
     compileOnly("org.springframework.boot:spring-boot-configuration-processor:$springBootVersion")
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor:$springBootVersion")
