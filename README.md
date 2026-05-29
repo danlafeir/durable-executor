@@ -1,4 +1,4 @@
-# durable-executor
+# spring-durable-executor
 
 Durable execution for JVM applications. Persists in-flight method invocations to disk so they survive process crashes and are automatically retried on next startup.
 
@@ -6,8 +6,8 @@ Durable execution for JVM applications. Persists in-flight method invocations to
 
 | Module | Artifact | Description |
 |--------|----------|-------------|
-| `durable-executor-core` | `com.durableexecutor:durable-executor-core` | Framework-agnostic core: `@Durable` annotation, execution model, file-backed store |
-| `durable-executor-spring` | `com.durableexecutor:durable-executor-spring` | Spring Boot integration: AOP aspect, autoconfiguration, startup recovery |
+| `spring-durable-executor-core` | `com.durableexecutor:spring-durable-executor-core` | Framework-agnostic core: `@Durable` annotation, execution model, file-backed store |
+| `spring-durable-executor-spring` | `com.durableexecutor:spring-durable-executor-spring` | Spring Boot integration: AOP aspect, autoconfiguration, startup recovery |
 
 ## How it works
 
@@ -23,7 +23,7 @@ Add the Spring module to your dependencies:
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("com.durableexecutor:durable-executor-spring:0.1.0")
+    implementation("com.durableexecutor:spring-durable-executor-spring:0.1.0")
 }
 ```
 
@@ -75,12 +75,12 @@ public void reconcile() { ... }
 
 1. Add a new submodule to `settings.gradle.kts`:
    ```kotlin
-   include("durable-executor-quarkus")
+   include("spring-durable-executor-quarkus")
    ```
-2. Depend on `durable-executor-core` for the annotation, model, and store:
+2. Depend on `spring-durable-executor-core` for the annotation, model, and store:
    ```kotlin
    dependencies {
-       api(project(":durable-executor-core"))
+       api(project(":spring-durable-executor-core"))
    }
    ```
 3. Implement an interceptor and a startup recovery hook using your framework's extension points.
