@@ -24,6 +24,7 @@ dependencies {
 publishing {
     publications {
         create<MavenPublication>("mavenJava") {
+            artifactId = "durable-executor-core"
             from(components["java"])
             pom {
                 name.set("durable-executor-core")

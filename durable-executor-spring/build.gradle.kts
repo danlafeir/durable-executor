@@ -36,6 +36,7 @@ dependencies {
 publishing {
     publications {
         create<MavenPublication>("mavenJava") {
+            artifactId = "durable-executor-spring"
             from(components["java"])
             pom {
                 name.set("durable-executor-spring")
