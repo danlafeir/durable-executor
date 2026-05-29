@@ -50,7 +50,6 @@ publishing {
                 developers {
                     developer {
                         id.set("danlafeir")
-                        email.set("danlafeir@gmail.com")
                     }
                 }
                 scm {
