@@ -1,4 +1,4 @@
-package com.durableexecutor.config;
+package com.github.danlafeir.durableexecutor.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 

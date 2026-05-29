@@ -1,1 +1,1 @@
-com.durableexecutor.config.DurableAutoConfiguration
+com.github.danlafeir.durableexecutor.config.DurableAutoConfiguration

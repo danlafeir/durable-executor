@@ -1,4 +1,4 @@
-package com.durableexecutor.model;
+package com.github.danlafeir.durableexecutor.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 

@@ -1,8 +1,8 @@
-package com.durableexecutor.recovery;
+package com.github.danlafeir.durableexecutor.recovery;
 
-import com.durableexecutor.aspect.DurableAspect;
-import com.durableexecutor.model.DurableExecution;
-import com.durableexecutor.store.DurableStore;
+import com.github.danlafeir.durableexecutor.aspect.DurableAspect;
+import com.github.danlafeir.durableexecutor.model.DurableExecution;
+import com.github.danlafeir.durableexecutor.store.DurableStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -71,7 +71,6 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
 
         Object bean = applicationContext.getBean(targetClass);
 
-        // setAccessible mirrors what Spring itself does when invoking methods reflectively
         method.setAccessible(true);
 
         DurableAspect.RECOVERY_EXECUTION_ID.set(execution.getExecutionId());
