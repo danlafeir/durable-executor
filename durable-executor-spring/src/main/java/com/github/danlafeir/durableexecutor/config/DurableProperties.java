@@ -17,7 +17,7 @@ public class DurableProperties {
      * Path to the JSON file used to persist in-flight executions.
      * Relative paths are resolved from the JVM working directory.
      */
-    private String storePath = "./durable-executions.json";
+    private String storePath = "./durable-executions";
 
     public String getStorePath() { return storePath; }
     public void setStorePath(String storePath) { this.storePath = storePath; }

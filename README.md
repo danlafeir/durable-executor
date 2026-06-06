@@ -46,7 +46,7 @@ Spring Boot picks up the autoconfiguration automatically. No further setup requi
 
 ```yaml
 durable:
-  store-path: /var/data/durable-executions.json  # default: ./durable-executions.json
+  store-path: /var/data/durable-executions  # default: ./durable-executions
 ```
 
 ### Plain Spring (no Boot)

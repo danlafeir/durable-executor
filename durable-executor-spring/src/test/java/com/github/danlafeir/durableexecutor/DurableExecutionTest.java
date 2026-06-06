@@ -22,7 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest(classes = {DurableExecutionTest.TestConfig.class, DurableAutoConfiguration.class})
-@TestPropertySource(properties = "durable.store-path=${java.io.tmpdir}/durable-test-${random.uuid}.json")
+@TestPropertySource(properties = "durable.store-path=${java.io.tmpdir}/durable-test-${random.uuid}")
 class DurableExecutionTest {
 
     @Autowired

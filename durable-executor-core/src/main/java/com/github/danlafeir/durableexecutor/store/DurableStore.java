@@ -2,7 +2,6 @@ package com.github.danlafeir.durableexecutor.store;
 
 import com.github.danlafeir.durableexecutor.model.DurableExecution;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.type.MapType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,79 +11,66 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.stream.Stream;
 
 /**
- * Thread-safe, file-backed store for in-flight durable executions.
+ * File-per-execution store for in-flight durable executions.
  *
- * Writes go through an atomic rename (write to tmp, then move) to avoid
- * leaving a partially-written file on crash.
+ * Each execution is written to its own {executionId}.json file inside the store
+ * directory. Because each file is independent, concurrent writes from multiple
+ * threads require no locking. Writes are atomic (write to .tmp, then rename).
  */
 public class DurableStore {
 
     private static final Logger log = LoggerFactory.getLogger(DurableStore.class);
 
-    private final Path storePath;
+    private final Path storeDir;
     private final ObjectMapper objectMapper;
-    private final MapType mapType;
 
-    public DurableStore(Path storePath, ObjectMapper objectMapper) {
-        this.storePath = storePath;
+    public DurableStore(Path storeDir, ObjectMapper objectMapper) {
+        this.storeDir = storeDir;
         this.objectMapper = objectMapper;
-        this.mapType = objectMapper.getTypeFactory()
-                .constructMapType(LinkedHashMap.class, String.class, DurableExecution.class);
     }
 
-    public synchronized void save(DurableExecution execution) {
+    public void save(DurableExecution execution) {
         try {
-            Map<String, DurableExecution> all = readFile();
-            all.put(execution.getExecutionId(), execution);
-            writeFile(all);
+            Files.createDirectories(storeDir);
+            Path tmp = storeDir.resolve(execution.getExecutionId() + ".tmp");
+            Path file = storeDir.resolve(execution.getExecutionId() + ".json");
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(tmp.toFile(), execution);
+            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException e) {
             throw new DurableStoreException("Failed to save execution " + execution.getExecutionId(), e);
         }
     }
 
-    public synchronized void delete(String executionId) {
+    public void delete(String executionId) {
         try {
-            Map<String, DurableExecution> all = readFile();
-            if (all.remove(executionId) != null) {
-                writeFile(all);
-            }
+            Files.deleteIfExists(storeDir.resolve(executionId + ".json"));
         } catch (IOException e) {
             log.error("Failed to delete execution {} from store", executionId, e);
         }
     }
 
-    public synchronized Map<String, DurableExecution> loadAll() {
-        try {
-            return readFile();
+    public Map<String, DurableExecution> loadAll() {
+        if (!Files.exists(storeDir)) {
+            return new LinkedHashMap<>();
+        }
+        Map<String, DurableExecution> result = new LinkedHashMap<>();
+        try (Stream<Path> files = Files.list(storeDir)) {
+            files.filter(p -> p.getFileName().toString().endsWith(".json"))
+                 .forEach(file -> {
+                     try {
+                         DurableExecution execution = objectMapper.readValue(file.toFile(), DurableExecution.class);
+                         result.put(execution.getExecutionId(), execution);
+                     } catch (IOException e) {
+                         log.warn("Skipping unreadable execution file {} ({})", file.getFileName(), e.getMessage());
+                     }
+                 });
         } catch (IOException e) {
-            log.error("Failed to read durable store from {}", storePath, e);
-            return new LinkedHashMap<>();
+            log.error("Failed to list durable store directory {}", storeDir, e);
         }
-    }
-
-    private Map<String, DurableExecution> readFile() throws IOException {
-        if (!Files.exists(storePath)) {
-            return new LinkedHashMap<>();
-        }
-        try {
-            return objectMapper.readValue(storePath.toFile(), mapType);
-        } catch (IOException e) {
-            log.warn("Durable store at {} is unreadable ({}); treating as empty. " +
-                    "Original file preserved for manual inspection.", storePath, e.getMessage());
-            return new LinkedHashMap<>();
-        }
-    }
-
-    private void writeFile(Map<String, DurableExecution> executions) throws IOException {
-        Path parent = storePath.getParent();
-        if (parent != null) {
-            Files.createDirectories(parent);
-        }
-        Path tmp = storePath.resolveSibling(storePath.getFileName() + ".tmp");
-        objectMapper.writerWithDefaultPrettyPrinter().writeValue(tmp.toFile(), executions);
-        Files.move(tmp, storePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        return result;
     }
 
     public static class DurableStoreException extends RuntimeException {
