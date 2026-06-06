@@ -16,7 +16,7 @@ import java.util.stream.Stream;
 /**
  * File-per-execution store for in-flight durable executions.
  *
- * Each execution is written to its own {executionId}.json file inside the store
+ * Each execution is written to its own {executionId}.msgpack file inside the store
  * directory. Because each file is independent, concurrent writes from multiple
  * threads require no locking. Writes are atomic (write to .tmp, then rename).
  */
@@ -36,8 +36,8 @@ public class DurableStore {
         try {
             Files.createDirectories(storeDir);
             Path tmp = storeDir.resolve(execution.getExecutionId() + ".tmp");
-            Path file = storeDir.resolve(execution.getExecutionId() + ".json");
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(tmp.toFile(), execution);
+            Path file = storeDir.resolve(execution.getExecutionId() + ".msgpack");
+            objectMapper.writeValue(tmp.toFile(), execution);
             Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException e) {
             throw new DurableStoreException("Failed to save execution " + execution.getExecutionId(), e);
@@ -46,7 +46,7 @@ public class DurableStore {
 
     public void delete(String executionId) {
         try {
-            Files.deleteIfExists(storeDir.resolve(executionId + ".json"));
+            Files.deleteIfExists(storeDir.resolve(executionId + ".msgpack"));
         } catch (IOException e) {
             log.error("Failed to delete execution {} from store", executionId, e);
         }
@@ -58,7 +58,7 @@ public class DurableStore {
         }
         Map<String, DurableExecution> result = new LinkedHashMap<>();
         try (Stream<Path> files = Files.list(storeDir)) {
-            files.filter(p -> p.getFileName().toString().endsWith(".json"))
+            files.filter(p -> p.getFileName().toString().endsWith(".msgpack"))
                  .forEach(file -> {
                      try {
                          DurableExecution execution = objectMapper.readValue(file.toFile(), DurableExecution.class);

@@ -11,7 +11,7 @@ public class DurableExecution {
     private String targetClassName;
     private String methodName;
     private String[] parameterTypeNames;
-    private String[] serializedArgs;
+    private byte[][] serializedArgs;
     private Instant createdAt;
 
     public DurableExecution() {}
@@ -21,7 +21,7 @@ public class DurableExecution {
             String targetClassName,
             String methodName,
             String[] parameterTypeNames,
-            String[] serializedArgs,
+            byte[][] serializedArgs,
             Instant createdAt) {
         this.executionId = executionId;
         this.targetClassName = targetClassName;
@@ -43,8 +43,8 @@ public class DurableExecution {
     public String[] getParameterTypeNames() { return parameterTypeNames; }
     public void setParameterTypeNames(String[] parameterTypeNames) { this.parameterTypeNames = parameterTypeNames; }
 
-    public String[] getSerializedArgs() { return serializedArgs; }
-    public void setSerializedArgs(String[] serializedArgs) { this.serializedArgs = serializedArgs; }
+    public byte[][] getSerializedArgs() { return serializedArgs; }
+    public void setSerializedArgs(byte[][] serializedArgs) { this.serializedArgs = serializedArgs; }
 
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }

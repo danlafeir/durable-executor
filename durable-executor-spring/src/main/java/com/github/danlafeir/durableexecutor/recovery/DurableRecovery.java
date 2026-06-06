@@ -89,7 +89,7 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         return types;
     }
 
-    private Object[] deserializeArgs(String[] serialized, Class<?>[] types) throws Exception {
+    private Object[] deserializeArgs(byte[][] serialized, Class<?>[] types) throws Exception {
         Object[] args = new Object[serialized.length];
         for (int i = 0; i < serialized.length; i++) {
             args[i] = objectMapper.readValue(serialized[i], types[i]);

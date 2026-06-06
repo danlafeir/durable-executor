@@ -1,11 +1,13 @@
 package com.github.danlafeir.durableexecutor;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.danlafeir.durableexecutor.annotation.Durable;
 import com.github.danlafeir.durableexecutor.config.DurableAutoConfiguration;
 import com.github.danlafeir.durableexecutor.store.DurableStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
@@ -30,6 +32,10 @@ class DurableExecutionTest {
 
     @Autowired
     private DurableStore durableStore;
+
+    @Autowired
+    @Qualifier("durableObjectMapper")
+    private ObjectMapper durableObjectMapper;
 
     @BeforeEach
     void clearStore() throws IOException {
@@ -59,13 +65,16 @@ class DurableExecutionTest {
     }
 
     @Test
-    void recoveryReInvokesOpenExecutions(@Autowired ApplicationContext ctx) {
+    void recoveryReInvokesOpenExecutions(@Autowired ApplicationContext ctx) throws Exception {
         var pendingExecution = new com.github.danlafeir.durableexecutor.model.DurableExecution(
                 "recovery-test-id",
                 OrderService.class.getName(),
                 "processOrder",
                 new String[]{"java.lang.String", "int"},
-                new String[]{"\"order-recovered\"", "7"},
+                new byte[][]{
+                    durableObjectMapper.writeValueAsBytes("order-recovered"),
+                    durableObjectMapper.writeValueAsBytes(7)
+                },
                 java.time.Instant.now()
         );
         durableStore.save(pendingExecution);

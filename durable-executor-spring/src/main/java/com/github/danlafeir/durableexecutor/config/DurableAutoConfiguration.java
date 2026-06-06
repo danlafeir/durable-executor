@@ -6,6 +6,7 @@ import com.github.danlafeir.durableexecutor.store.DurableStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import org.msgpack.jackson.dataformat.MessagePackFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -23,7 +24,7 @@ public class DurableAutoConfiguration {
     @Bean(name = "durableObjectMapper")
     @ConditionalOnMissingBean(name = "durableObjectMapper")
     public ObjectMapper durableObjectMapper() {
-        return new ObjectMapper()
+        return new ObjectMapper(new MessagePackFactory())
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }

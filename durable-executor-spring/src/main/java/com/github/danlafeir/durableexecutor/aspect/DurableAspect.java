@@ -78,11 +78,11 @@ public class DurableAspect {
         Object[] args = joinPoint.getArgs();
         Class<?>[] paramTypes = method.getParameterTypes();
 
-        String[] serializedArgs = new String[args.length];
+        byte[][] serializedArgs = new byte[args.length][];
         String[] paramTypeNames = new String[paramTypes.length];
 
         for (int i = 0; i < args.length; i++) {
-            serializedArgs[i] = objectMapper.writeValueAsString(args[i]);
+            serializedArgs[i] = objectMapper.writeValueAsBytes(args[i]);
             paramTypeNames[i] = paramTypes[i].getName();
         }
 
