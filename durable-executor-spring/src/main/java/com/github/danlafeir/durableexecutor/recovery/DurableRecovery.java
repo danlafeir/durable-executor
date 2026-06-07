@@ -6,59 +6,101 @@ import com.github.danlafeir.durableexecutor.store.DurableStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationListener;
 
 import java.lang.reflect.Method;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
- * On application startup, loads every open DurableExecution record and re-invokes
- * the corresponding Spring bean method so it can complete.
+ * Retries open DurableExecution records on startup and every 5 minutes.
  *
- * Recovery runs after the application context is fully initialised (ApplicationReadyEvent)
- * so all beans are available for lookup.
+ * Startup recovery runs synchronously on the ApplicationReadyEvent thread.
+ * Scheduled recovery submits each retry to the thread pool so retries run
+ * concurrently without blocking the scheduler. An in-flight set prevents the
+ * same execution from being retried twice simultaneously across scheduler ticks.
  *
- * The method is invoked through the Spring proxy (obtained from ApplicationContext.getBean)
- * so @Transactional, @Retry, and other AOP advice still applies. The DurableAspect's
- * RECOVERY_EXECUTION_ID thread-local tells the aspect to reuse the existing record
- * instead of creating a duplicate.
+ * If a retry fails (either path), the record is moved to the dead letter store
+ * and removed from the pending store.
  */
-public class DurableRecovery implements ApplicationListener<ApplicationReadyEvent> {
+public class DurableRecovery implements ApplicationListener<ApplicationReadyEvent>, DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(DurableRecovery.class);
+    private static final long RETRY_INTERVAL_MINUTES = 5;
 
-    private final DurableStore store;
+    private final DurableStore pendingStore;
+    private final DurableStore deadLetterStore;
     private final ObjectMapper objectMapper;
     private final ApplicationContext applicationContext;
+    private final ScheduledExecutorService scheduler;
+    private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
 
-    public DurableRecovery(DurableStore store, ObjectMapper objectMapper, ApplicationContext applicationContext) {
-        this.store = store;
+    public DurableRecovery(DurableStore pendingStore,
+                           DurableStore deadLetterStore,
+                           ObjectMapper objectMapper,
+                           ApplicationContext applicationContext,
+                           ScheduledExecutorService scheduler) {
+        this.pendingStore = pendingStore;
+        this.deadLetterStore = deadLetterStore;
         this.objectMapper = objectMapper;
         this.applicationContext = applicationContext;
+        this.scheduler = scheduler;
     }
 
     @Override
     public void onApplicationEvent(ApplicationReadyEvent event) {
-        Map<String, DurableExecution> pending = store.loadAll();
+        Map<String, DurableExecution> pending = pendingStore.loadAll();
+        if (!pending.isEmpty()) {
+            log.info("Recovering {} pending durable execution(s) on startup", pending.size());
+            pending.values().forEach(this::retryExecution);
+        }
+        scheduler.scheduleAtFixedRate(this::runScheduledRecovery, RETRY_INTERVAL_MINUTES, RETRY_INTERVAL_MINUTES, TimeUnit.MINUTES);
+    }
+
+    private void runScheduledRecovery() {
+        Map<String, DurableExecution> pending = pendingStore.loadAll();
         if (pending.isEmpty()) {
             return;
         }
-        log.info("Recovering {} pending durable execution(s)", pending.size());
+        log.info("Scheduled check found {} pending durable execution(s)", pending.size());
         for (DurableExecution execution : pending.values()) {
-            recoverSafely(execution);
+            if (inFlight.add(execution.getExecutionId())) {
+                scheduler.submit(() -> {
+                    try {
+                        retryExecution(execution);
+                    } finally {
+                        inFlight.remove(execution.getExecutionId());
+                    }
+                });
+            }
         }
     }
 
-    private void recoverSafely(DurableExecution execution) {
+    private void retryExecution(DurableExecution execution) {
         try {
-            log.info("Recovering execution {} → {}.{}()",
+            log.info("Retrying execution {} → {}.{}()",
                     execution.getExecutionId(), execution.getTargetClassName(), execution.getMethodName());
             recover(execution);
         } catch (Exception e) {
-            log.error("Recovery failed for execution {} — will retry on next boot. Cause: {}",
+            log.error("Execution {} failed, moving to dead letter queue. Cause: {}",
                     execution.getExecutionId(), e.getMessage(), e);
+            sendToDeadLetter(execution);
+        }
+    }
+
+    private void sendToDeadLetter(DurableExecution execution) {
+        try {
+            deadLetterStore.save(execution);
+            pendingStore.delete(execution.getExecutionId());
+            log.info("Execution {} moved to dead letter queue", execution.getExecutionId());
+        } catch (Exception e) {
+            log.error("Failed to move execution {} to dead letter queue", execution.getExecutionId(), e);
         }
     }
 
@@ -66,13 +108,9 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         Class<?> targetClass = Class.forName(execution.getTargetClassName());
         Class<?>[] paramTypes = resolveParamTypes(execution.getParameterTypeNames());
         Method method = targetClass.getMethod(execution.getMethodName(), paramTypes);
-
         Object[] args = deserializeArgs(execution.getSerializedArgs(), paramTypes);
-
         Object bean = applicationContext.getBean(targetClass);
-
         method.setAccessible(true);
-
         DurableAspect.RECOVERY_EXECUTION_ID.set(execution.getExecutionId());
         try {
             method.invoke(bean, args);
@@ -109,5 +147,13 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
             case "char"    -> char.class;
             default        -> Class.forName(name);
         };
+    }
+
+    @Override
+    public void destroy() throws InterruptedException {
+        scheduler.shutdown();
+        if (!scheduler.awaitTermination(30, TimeUnit.SECONDS)) {
+            scheduler.shutdownNow();
+        }
     }
 }

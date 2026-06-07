@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.msgpack.jackson.dataformat.MessagePackFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -15,6 +16,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 
 import java.nio.file.Path;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 
 @AutoConfiguration
 @EnableAspectJAutoProxy
@@ -32,22 +35,37 @@ public class DurableAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public DurableStore durableStore(DurableProperties properties,
-                                     ObjectMapper durableObjectMapper) {
+                                     @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper) {
         return new DurableStore(Path.of(properties.getStorePath()), durableObjectMapper);
     }
 
-    @Bean
-    @ConditionalOnMissingBean
-    public DurableAspect durableAspect(DurableStore durableStore,
-                                       ObjectMapper durableObjectMapper) {
-        return new DurableAspect(durableStore, durableObjectMapper);
+    @Bean(name = "durableDeadLetterStore")
+    @ConditionalOnMissingBean(name = "durableDeadLetterStore")
+    public DurableStore durableDeadLetterStore(DurableProperties properties,
+                                               @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper) {
+        return new DurableStore(Path.of(properties.getDeadLetterPath()), durableObjectMapper);
     }
 
     @Bean
     @ConditionalOnMissingBean
-    public DurableRecovery durableRecovery(DurableStore durableStore,
-                                           ObjectMapper durableObjectMapper,
-                                           ApplicationContext applicationContext) {
-        return new DurableRecovery(durableStore, durableObjectMapper, applicationContext);
+    public DurableAspect durableAspect(@Qualifier("durableStore") DurableStore durableStore,
+                                       @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper) {
+        return new DurableAspect(durableStore, durableObjectMapper);
+    }
+
+    @Bean(name = "durableScheduler")
+    @ConditionalOnMissingBean(name = "durableScheduler")
+    public ScheduledExecutorService durableScheduler(DurableProperties properties) {
+        return Executors.newScheduledThreadPool(properties.getRetryThreads());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public DurableRecovery durableRecovery(@Qualifier("durableStore") DurableStore durableStore,
+                                           @Qualifier("durableDeadLetterStore") DurableStore durableDeadLetterStore,
+                                           @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper,
+                                           ApplicationContext applicationContext,
+                                           @Qualifier("durableScheduler") ScheduledExecutorService durableScheduler) {
+        return new DurableRecovery(durableStore, durableDeadLetterStore, durableObjectMapper, applicationContext, durableScheduler);
     }
 }
