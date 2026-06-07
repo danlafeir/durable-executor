@@ -25,11 +25,12 @@ dependencies {
     api("org.springframework.boot:spring-boot-autoconfigure:$springBootVersion")
     api("org.aspectj:aspectjweaver:1.9.24")
 
+    compileOnly("org.springframework:spring-webmvc:$springVersion")
     compileOnly("org.springframework.boot:spring-boot-configuration-processor:$springBootVersion")
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor:$springBootVersion")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test:$springBootVersion")
-    testImplementation("org.springframework.boot:spring-boot-starter:$springBootVersion")
+    testImplementation("org.springframework.boot:spring-boot-starter-web:$springBootVersion")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

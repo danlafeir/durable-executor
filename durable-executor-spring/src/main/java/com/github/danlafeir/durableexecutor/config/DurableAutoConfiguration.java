@@ -3,6 +3,7 @@ package com.github.danlafeir.durableexecutor.config;
 import com.github.danlafeir.durableexecutor.aspect.DurableAspect;
 import com.github.danlafeir.durableexecutor.recovery.DurableRecovery;
 import com.github.danlafeir.durableexecutor.store.DurableStore;
+import com.github.danlafeir.durableexecutor.web.DurableDeadLetterController;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -10,6 +11,9 @@ import org.msgpack.jackson.dataformat.MessagePackFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication.Type;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
@@ -57,6 +61,15 @@ public class DurableAutoConfiguration {
     @ConditionalOnMissingBean(name = "durableScheduler")
     public ScheduledExecutorService durableScheduler(DurableProperties properties) {
         return Executors.newScheduledThreadPool(properties.getRetryThreads());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnWebApplication(type = Type.SERVLET)
+    @ConditionalOnProperty(prefix = "durable.dlq-endpoint", name = "enabled", havingValue = "true")
+    public DurableDeadLetterController durableDeadLetterController(
+            @Qualifier("durableDeadLetterStore") DurableStore durableDeadLetterStore) {
+        return new DurableDeadLetterController(durableDeadLetterStore);
     }
 
     @Bean

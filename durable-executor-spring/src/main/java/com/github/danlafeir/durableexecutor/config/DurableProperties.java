@@ -37,4 +37,24 @@ public class DurableProperties {
 
     public int getRetryThreads() { return retryThreads; }
     public void setRetryThreads(int retryThreads) { this.retryThreads = retryThreads; }
+
+    private DlqEndpoint dlqEndpoint = new DlqEndpoint();
+
+    public DlqEndpoint getDlqEndpoint() { return dlqEndpoint; }
+    public void setDlqEndpoint(DlqEndpoint dlqEndpoint) { this.dlqEndpoint = dlqEndpoint; }
+
+    public static class DlqEndpoint {
+
+        /** Whether to expose the dead letter queue HTTP endpoint. Disabled by default. */
+        private boolean enabled = false;
+
+        /** Base path for the dead letter queue endpoint. */
+        private String path = "/durable/dlq";
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+
+        public String getPath() { return path; }
+        public void setPath(String path) { this.path = path; }
+    }
 }
