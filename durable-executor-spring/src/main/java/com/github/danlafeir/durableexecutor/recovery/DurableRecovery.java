@@ -55,6 +55,7 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
 
     @Override
     public void onApplicationEvent(ApplicationReadyEvent event) {
+        drainStuckDeleted();
         Map<String, DurableExecution> pending = pendingStore.loadAll();
         if (!pending.isEmpty()) {
             log.info("Recovering {} pending durable execution(s) on startup", pending.size());
@@ -64,6 +65,7 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
     }
 
     private void runScheduledRecovery() {
+        drainStuckDeleted();
         Map<String, DurableExecution> pending = pendingStore.loadAll();
         if (pending.isEmpty()) {
             return;
@@ -78,6 +80,23 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
                         inFlight.remove(execution.getExecutionId());
                     }
                 });
+            }
+        }
+    }
+
+    private void drainStuckDeleted() {
+        Map<String, DurableExecution> stuck = pendingStore.loadAllDeleted();
+        if (stuck.isEmpty()) {
+            return;
+        }
+        log.warn("Found {} stuck-deleted execution(s); method completed but cleanup did not — moving to DLQ", stuck.size());
+        for (DurableExecution execution : stuck.values()) {
+            try {
+                deadLetterStore.save(execution);
+                pendingStore.finalizeDelete(execution.getExecutionId());
+                log.info("Stuck execution {} moved to DLQ", execution.getExecutionId());
+            } catch (Exception e) {
+                log.error("Failed to move stuck execution {} to DLQ", execution.getExecutionId(), e);
             }
         }
     }

@@ -48,6 +48,7 @@ class DurableExecutionTest {
     @BeforeEach
     void clearStore() {
         durableStore.loadAll().keySet().forEach(durableStore::delete);
+        durableStore.loadAllDeleted().keySet().forEach(durableStore::finalizeDelete);
         deadLetterStore.loadAll().keySet().forEach(deadLetterStore::delete);
     }
 
@@ -97,6 +98,33 @@ class DurableExecutionTest {
 
         assertThat(OrderService.processed).contains("order-recovered:7");
         assertThat(durableStore.loadAll()).isEmpty();
+    }
+
+    @Test
+    void stuckDeletedExecutionIsMovedToDeadLetterQueue(@Autowired ApplicationContext ctx) throws Exception {
+        // Simulate a crash between markDeleted() and finalizeDelete() by writing a -deleted file directly
+        var execution = new DurableExecution(
+                "stuck-delete-id",
+                OrderService.class.getName(),
+                "processOrder",
+                new String[]{"java.lang.String", "int"},
+                new byte[][]{
+                    durableObjectMapper.writeValueAsBytes("order-stuck"),
+                    durableObjectMapper.writeValueAsBytes(5)
+                },
+                Instant.now()
+        );
+        durableStore.save(execution);
+        durableStore.markDeleted(execution.getExecutionId());
+
+        ctx.publishEvent(new ApplicationReadyEvent(
+                new org.springframework.boot.SpringApplication(TestConfig.class),
+                new String[0],
+                (org.springframework.context.ConfigurableApplicationContext) ctx,
+                null));
+
+        assertThat(durableStore.loadAllDeleted()).isEmpty();
+        assertThat(deadLetterStore.loadAll()).containsKey("stuck-delete-id");
     }
 
     @Test
