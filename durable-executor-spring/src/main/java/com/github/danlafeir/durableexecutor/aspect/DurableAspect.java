@@ -59,8 +59,13 @@ public class DurableAspect {
         try {
             Object result = joinPoint.proceed();
             store.markDeleted(executionId);  // atomic commit — crash-safe from this point
-            log.debug("Durable execution closed: {}", executionId);
-            store.finalizeDelete(executionId);
+            try {
+                store.finalizeDelete(executionId);
+                log.debug("Durable execution closed: {}", executionId);
+            } catch (Exception e) {
+                log.warn("Finalizing close failed for {}; reverting to pending state for retry. Cause: {}", executionId, e.getMessage());
+                store.unmarkDeleted(executionId);
+            }
             return result;
         } catch (Throwable t) {
             log.warn("Durable execution {} failed; record kept for recovery. Cause: {}", executionId, t.getMessage());

@@ -58,10 +58,11 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         drainStuckDeleted();
         Map<String, DurableExecution> pending = pendingStore.loadAll();
         if (!pending.isEmpty()) {
-            log.info("Recovering {} pending durable execution(s) on startup", pending.size());
-            pending.values().forEach(this::retryExecution);
+            log.info("Submitting {} pending execution(s) for concurrent recovery on startup", pending.size());
+            pending.values().forEach(this::scheduleRetry);
         }
-        scheduler.scheduleAtFixedRate(this::runScheduledRecovery, RETRY_INTERVAL_MINUTES, RETRY_INTERVAL_MINUTES, TimeUnit.MINUTES);
+        scheduler.scheduleAtFixedRate(this::runScheduledRecovery,
+                RETRY_INTERVAL_MINUTES, RETRY_INTERVAL_MINUTES, TimeUnit.MINUTES);
     }
 
     private void runScheduledRecovery() {
@@ -70,17 +71,19 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         if (pending.isEmpty()) {
             return;
         }
-        log.info("Scheduled check found {} pending durable execution(s)", pending.size());
-        for (DurableExecution execution : pending.values()) {
-            if (inFlight.add(execution.getExecutionId())) {
-                scheduler.submit(() -> {
-                    try {
-                        retryExecution(execution);
-                    } finally {
-                        inFlight.remove(execution.getExecutionId());
-                    }
-                });
-            }
+        log.info("Scheduled check found {} pending execution(s)", pending.size());
+        pending.values().forEach(this::scheduleRetry);
+    }
+
+    private void scheduleRetry(DurableExecution execution) {
+        if (inFlight.add(execution.getExecutionId())) {
+            scheduler.submit(() -> {
+                try {
+                    retryExecution(execution);
+                } finally {
+                    inFlight.remove(execution.getExecutionId());
+                }
+            });
         }
     }
 

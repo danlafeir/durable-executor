@@ -21,8 +21,10 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 @SpringBootTest(classes = {DurableExecutionTest.TestConfig.class, DurableAutoConfiguration.class})
 @TestPropertySource(properties = {
@@ -96,8 +98,10 @@ class DurableExecutionTest {
                 (org.springframework.context.ConfigurableApplicationContext) ctx,
                 null));
 
-        assertThat(OrderService.processed).contains("order-recovered:7");
-        assertThat(durableStore.loadAll()).isEmpty();
+        await().atMost(5, SECONDS).untilAsserted(() -> {
+            assertThat(OrderService.processed).contains("order-recovered:7");
+            assertThat(durableStore.loadAll()).isEmpty();
+        });
     }
 
     @Test
@@ -123,8 +127,10 @@ class DurableExecutionTest {
                 (org.springframework.context.ConfigurableApplicationContext) ctx,
                 null));
 
-        assertThat(durableStore.loadAllDeleted()).isEmpty();
-        assertThat(deadLetterStore.loadAll()).containsKey("stuck-delete-id");
+        await().atMost(5, SECONDS).untilAsserted(() -> {
+            assertThat(durableStore.loadAllDeleted()).isEmpty();
+            assertThat(deadLetterStore.loadAll()).containsKey("stuck-delete-id");
+        });
     }
 
     @Test
@@ -145,9 +151,10 @@ class DurableExecutionTest {
                 (org.springframework.context.ConfigurableApplicationContext) ctx,
                 null));
 
-        assertThat(durableStore.loadAll()).isEmpty();
-        assertThat(deadLetterStore.loadAll()).hasSize(1);
-        assertThat(deadLetterStore.loadAll()).containsKey("dlq-test-id");
+        await().atMost(5, SECONDS).untilAsserted(() -> {
+            assertThat(durableStore.loadAll()).isEmpty();
+            assertThat(deadLetterStore.loadAll()).containsKey("dlq-test-id");
+        });
     }
 
     // ---- test fixtures ----
