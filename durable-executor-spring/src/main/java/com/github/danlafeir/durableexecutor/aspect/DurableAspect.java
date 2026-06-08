@@ -1,5 +1,6 @@
 package com.github.danlafeir.durableexecutor.aspect;
 
+import com.github.danlafeir.durableexecutor.DurableContext;
 import com.github.danlafeir.durableexecutor.annotation.Durable;
 import com.github.danlafeir.durableexecutor.model.DurableExecution;
 import com.github.danlafeir.durableexecutor.store.DurableStore;
@@ -46,6 +47,9 @@ public class DurableAspect {
 
     @Around("@annotation(durable)")
     public Object around(ProceedingJoinPoint joinPoint, Durable durable) throws Throwable {
+        // Clear any stale signal left by a prior invocation on a pooled thread.
+        DurableContext.clear();
+
         String recoveryId = RECOVERY_EXECUTION_ID.get();
         boolean isRecovery = recoveryId != null;
 
@@ -58,11 +62,23 @@ public class DurableAspect {
 
         // Isolate the business method — only method exceptions belong in this catch.
         Object result;
+        boolean markedFailed = false;
+        String failureReason = null;
         try {
             result = joinPoint.proceed();
+            markedFailed = DurableContext.isMarkedFailed();
+            failureReason = DurableContext.getFailureReason();
         } catch (Throwable t) {
             log.warn("Durable execution {} failed; record kept for recovery. Cause: {}", executionId, t.getMessage());
             throw t;
+        } finally {
+            DurableContext.clear();
+        }
+
+        if (markedFailed) {
+            String reason = (failureReason != null && !failureReason.isEmpty()) ? failureReason : "(no reason given)";
+            log.warn("Durable execution {} signalled failed via DurableContext; record kept for recovery. Reason: {}", executionId, reason);
+            return result;
         }
 
         // Method succeeded — close the record.

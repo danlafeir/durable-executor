@@ -1,6 +1,7 @@
 package com.github.danlafeir.durableexecutor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.danlafeir.durableexecutor.DurableContext;
 import com.github.danlafeir.durableexecutor.annotation.Durable;
 import com.github.danlafeir.durableexecutor.aspect.DurableAspect;
 import com.github.danlafeir.durableexecutor.store.DurableStore;
@@ -14,6 +15,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /**
  * Verifies the close-path branch in DurableAspect: transactional vs. non-transactional.
@@ -77,5 +79,51 @@ class DurableAspectCloseTest {
 
         verify(store, never()).delete(any());
         verify(store, never()).markDeleted(any());
+    }
+
+    @Test
+    void markedFailedLeavesRecordOpenRegardlessOfCloseMode() throws Throwable {
+        doAnswer(inv -> { DurableContext.markFailed(); return null; }).when(joinPoint).proceed();
+
+        aspect.around(joinPoint, durable);
+
+        verify(store, never()).delete(any());
+        verify(store, never()).markDeleted(any());
+        verify(store, never()).finalizeDelete(any());
+    }
+
+    @Test
+    void markedFailedWithReasonLeavesRecordOpen() throws Throwable {
+        doAnswer(inv -> { DurableContext.markFailed("downstream timeout"); return null; }).when(joinPoint).proceed();
+
+        aspect.around(joinPoint, durable);
+
+        verify(store, never()).delete(any());
+        verify(store, never()).markDeleted(any());
+    }
+
+    @Test
+    void staleMarkFailedOnThreadIsIgnoredForNextInvocation() throws Throwable {
+        DurableContext.markFailed("stale from previous task");
+
+        doReturn(null).when(joinPoint).proceed();
+        when(durable.closeMode()).thenReturn(Durable.CloseMode.IDEMPOTENT);
+
+        aspect.around(joinPoint, durable);
+
+        verify(store).delete("test-id");
+        assertFalse(DurableContext.isMarkedFailed());
+    }
+
+    @Test
+    void markFailedFlagClearedAfterException() throws Throwable {
+        DurableContext.markFailed("pre-set");
+        doThrow(new RuntimeException("boom")).when(joinPoint).proceed();
+
+        try {
+            aspect.around(joinPoint, durable);
+        } catch (RuntimeException ignored) {}
+
+        assertFalse(DurableContext.isMarkedFailed());
     }
 }
