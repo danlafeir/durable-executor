@@ -147,8 +147,17 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         Method method = targetClass.getMethod(execution.getMethodName(), paramTypes);
         Object[] args = deserializeArgs(execution.getSerializedArgs(), paramTypes);
         Object bean = applicationContext.getBean(targetClass);
-        // getMethod() returns only public methods; setAccessible is unnecessary and
-        // throws InaccessibleObjectException on named modules in JDK 17+
+        // setAccessible is required when the method's declaring class has non-public
+        // visibility (e.g. a public method inside a package-private enclosing type).
+        // On named-module deployments it may throw InaccessibleObjectException — we
+        // log a warning and proceed; method.invoke() will fail with a clear error if
+        // the method truly isn't accessible.
+        try {
+            method.setAccessible(true);
+        } catch (RuntimeException e) {
+            log.warn("Could not setAccessible on {}; recovery may fail if the method is not otherwise accessible. "
+                    + "Ensure @Durable methods are in exported packages when using named modules.", method);
+        }
         DurableAspect.RECOVERY_EXECUTION_ID.set(execution.getExecutionId());
         try {
             method.invoke(bean, args);
