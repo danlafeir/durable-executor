@@ -86,6 +86,27 @@ public void reconcile() { ... }
 
 Concurrent live calls with the same ID are not deduplicated — idempotency of the method body is the caller's responsibility. IDs must not end with `-deleted` (reserved for the internal commit-marker suffix).
 
+### Close mode
+
+`@Durable` supports two close strategies, controlled by `closeMode`:
+
+| Mode | Default | Close mechanism | JVM-crash-after-success result |
+|------|---------|-----------------|-------------------------------|
+| `TRANSACTIONAL` | ✓ | Atomic rename to commit-marker, then delete | Marker file → DLQ entry (no retry) |
+| `IDEMPOTENT` | | Direct delete of the pending record | Pending file → one retry on next startup |
+
+```java
+// Default — prefers DLQ entry over double execution (for non-idempotent methods)
+@Durable
+public void chargeCard(String orderId, BigDecimal amount) { ... }
+
+// Explicit idempotent — prefers retry over DLQ noise (for safe-to-repeat methods)
+@Durable(closeMode = Durable.CloseMode.IDEMPOTENT)
+public void sendWelcomeEmail(String userId) { ... }
+```
+
+Both modes guarantee **at-least-once execution**. The difference is what happens in the narrow window between a method returning and the close operation completing: `TRANSACTIONAL` routes that case to the DLQ; `IDEMPOTENT` routes it to a retry.
+
 ## Requirements
 
 - Java 21+

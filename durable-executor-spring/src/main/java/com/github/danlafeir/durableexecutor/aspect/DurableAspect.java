@@ -65,16 +65,25 @@ public class DurableAspect {
             throw t;
         }
 
-        // Method succeeded. markDeleted() is the atomic commit point; if it throws,
-        // the DurableStoreException propagates to the caller (the .msgpack stays for retry).
-        store.markDeleted(executionId);
-        try {
-            store.finalizeDelete(executionId);
-            log.debug("Durable execution closed: {}", executionId);
-        } catch (Exception e) {
-            log.warn("Finalizing close failed for {}; reverting to pending state for retry. Cause: {}", executionId, e.getMessage());
-            store.unmarkDeleted(executionId);
+        // Method succeeded — close the record.
+        if (durable.closeMode() == Durable.CloseMode.TRANSACTIONAL) {
+            // Two-phase close: atomic rename to commit-marker, then delete.
+            // If the JVM crashes between the two steps the marker is picked up by
+            // recovery and routed to the DLQ (no retry). Prefer for non-idempotent methods.
+            store.markDeleted(executionId);
+            try {
+                store.finalizeDelete(executionId);
+            } catch (Exception e) {
+                log.warn("Finalizing close failed for {}; reverting to pending state for retry. Cause: {}", executionId, e.getMessage());
+                store.unmarkDeleted(executionId);
+            }
+        } else {
+            // Single-step close: direct delete of the pending record.
+            // If the JVM crashes before the delete completes the method is retried once.
+            // Prefer for idempotent methods — avoids DLQ noise from stuck commit-markers.
+            store.delete(executionId);
         }
+        log.debug("Durable execution closed: {}", executionId);
         return result;
     }
 
