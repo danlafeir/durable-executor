@@ -15,19 +15,23 @@ import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
  * Retries open DurableExecution records on startup and every 5 minutes.
  *
- * Startup recovery runs synchronously on the ApplicationReadyEvent thread.
- * Scheduled recovery submits each retry to the thread pool so retries run
- * concurrently without blocking the scheduler. An in-flight set prevents the
- * same execution from being retried twice simultaneously across scheduler ticks.
+ * The periodic trigger runs on a dedicated single-thread ScheduledExecutorService so
+ * long-running retries cannot starve the scheduler. Retry work runs on a separate
+ * fixed-thread pool sized by durable.retry-threads.
  *
- * If a retry fails (either path), the record is moved to the dead letter store
- * and removed from the pending store.
+ * An in-flight set prevents the same execution from being submitted to the retry pool
+ * twice across concurrent scheduler ticks.
+ *
+ * Stuck-deleted executions ({id}-deleted.msgpack files older than the configured grace
+ * period) are routed to the dead letter queue rather than retried.
  */
 public class DurableRecovery implements ApplicationListener<ApplicationReadyEvent>, DisposableBean {
 
@@ -39,67 +43,78 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
     private final ObjectMapper objectMapper;
     private final ApplicationContext applicationContext;
     private final ScheduledExecutorService scheduler;
+    private final ExecutorService retryExecutor;
     private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
 
     public DurableRecovery(DurableStore pendingStore,
                            DurableStore deadLetterStore,
                            ObjectMapper objectMapper,
                            ApplicationContext applicationContext,
-                           ScheduledExecutorService scheduler) {
+                           ScheduledExecutorService scheduler,
+                           ExecutorService retryExecutor) {
         this.pendingStore = pendingStore;
         this.deadLetterStore = deadLetterStore;
         this.objectMapper = objectMapper;
         this.applicationContext = applicationContext;
         this.scheduler = scheduler;
+        this.retryExecutor = retryExecutor;
     }
 
     @Override
     public void onApplicationEvent(ApplicationReadyEvent event) {
-        drainStuckDeleted();
-        Map<String, DurableExecution> pending = pendingStore.loadAll();
-        if (!pending.isEmpty()) {
-            log.info("Submitting {} pending execution(s) for concurrent recovery on startup", pending.size());
-            pending.values().forEach(this::scheduleRetry);
-        }
-        scheduler.scheduleAtFixedRate(this::runScheduledRecovery,
+        runRecovery("startup");
+        scheduler.scheduleAtFixedRate(
+                () -> runRecovery("scheduled"),
                 RETRY_INTERVAL_MINUTES, RETRY_INTERVAL_MINUTES, TimeUnit.MINUTES);
     }
 
-    private void runScheduledRecovery() {
-        drainStuckDeleted();
-        Map<String, DurableExecution> pending = pendingStore.loadAll();
-        if (pending.isEmpty()) {
-            return;
+    private void runRecovery(String trigger) {
+        DurableStore.StoreScan scan = pendingStore.scan();
+        drainStuckDeleted(scan.stuckDeleted());
+        if (!scan.pending().isEmpty()) {
+            log.info("[{}] Submitting {} pending execution(s) for retry", trigger, scan.pending().size());
+            scan.pending().values().forEach(this::scheduleRetry);
         }
-        log.info("Scheduled check found {} pending execution(s)", pending.size());
-        pending.values().forEach(this::scheduleRetry);
     }
 
     private void scheduleRetry(DurableExecution execution) {
         if (inFlight.add(execution.getExecutionId())) {
-            scheduler.submit(() -> {
-                try {
-                    retryExecution(execution);
-                } finally {
-                    inFlight.remove(execution.getExecutionId());
-                }
-            });
+            try {
+                retryExecutor.submit(() -> {
+                    try {
+                        retryExecution(execution);
+                    } finally {
+                        inFlight.remove(execution.getExecutionId());
+                    }
+                });
+            } catch (RejectedExecutionException e) {
+                inFlight.remove(execution.getExecutionId());
+                log.debug("Retry submission rejected for {} (executor shutting down)", execution.getExecutionId());
+            }
         }
     }
 
-    private void drainStuckDeleted() {
-        Map<String, DurableExecution> stuck = pendingStore.loadAllDeleted();
+    private void drainStuckDeleted(Map<String, DurableExecution> stuck) {
         if (stuck.isEmpty()) {
             return;
         }
-        log.warn("Found {} stuck-deleted execution(s); method completed but cleanup did not — moving to DLQ", stuck.size());
+        log.warn("Found {} stuck-deleted execution(s); moving to DLQ", stuck.size());
         for (DurableExecution execution : stuck.values()) {
+            // Write to DLQ first (safe to retry via REPLACE_EXISTING if finalize fails)
             try {
                 deadLetterStore.save(execution);
+            } catch (Exception e) {
+                log.error("Failed to write execution {} to DLQ, will retry next cycle", execution.getExecutionId(), e);
+                continue;
+            }
+            // Remove the stuck file — if this fails, the next cycle will overwrite the DLQ
+            // entry (harmless) and retry the cleanup
+            try {
                 pendingStore.finalizeDelete(execution.getExecutionId());
                 log.info("Stuck execution {} moved to DLQ", execution.getExecutionId());
             } catch (Exception e) {
-                log.error("Failed to move stuck execution {} to DLQ", execution.getExecutionId(), e);
+                log.warn("Stuck execution {} written to DLQ but source file not removed; will retry cleanup next cycle",
+                        execution.getExecutionId(), e);
             }
         }
     }
@@ -132,7 +147,8 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         Method method = targetClass.getMethod(execution.getMethodName(), paramTypes);
         Object[] args = deserializeArgs(execution.getSerializedArgs(), paramTypes);
         Object bean = applicationContext.getBean(targetClass);
-        method.setAccessible(true);
+        // getMethod() returns only public methods; setAccessible is unnecessary and
+        // throws InaccessibleObjectException on named modules in JDK 17+
         DurableAspect.RECOVERY_EXECUTION_ID.set(execution.getExecutionId());
         try {
             method.invoke(bean, args);
@@ -174,8 +190,12 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
     @Override
     public void destroy() throws InterruptedException {
         scheduler.shutdown();
+        retryExecutor.shutdown();
         if (!scheduler.awaitTermination(30, TimeUnit.SECONDS)) {
             scheduler.shutdownNow();
+        }
+        if (!retryExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+            retryExecutor.shutdownNow();
         }
     }
 }

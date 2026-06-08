@@ -11,16 +11,17 @@ import org.msgpack.jackson.dataformat.MessagePackFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication.Type;
+import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 
 import java.nio.file.Path;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -41,14 +42,14 @@ public class DurableAutoConfiguration {
     @ConditionalOnMissingBean
     public DurableStore durableStore(DurableProperties properties,
                                      @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper) {
-        return new DurableStore(Path.of(properties.getStorePath()), durableObjectMapper);
+        return new DurableStore(Path.of(properties.getStorePath()), durableObjectMapper, properties.getStuckGracePeriod());
     }
 
     @Bean(name = "durableDeadLetterStore")
     @ConditionalOnMissingBean(name = "durableDeadLetterStore")
     public DurableStore durableDeadLetterStore(DurableProperties properties,
                                                @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper) {
-        return new DurableStore(Path.of(properties.getDeadLetterPath()), durableObjectMapper);
+        return new DurableStore(Path.of(properties.getDeadLetterPath()), durableObjectMapper, properties.getStuckGracePeriod());
     }
 
     @Bean
@@ -58,10 +59,18 @@ public class DurableAutoConfiguration {
         return new DurableAspect(durableStore, durableObjectMapper);
     }
 
+    /** Single-thread scheduler — used only for the 5-minute periodic trigger. */
     @Bean(name = "durableScheduler")
     @ConditionalOnMissingBean(name = "durableScheduler")
-    public ScheduledExecutorService durableScheduler(DurableProperties properties) {
-        return Executors.newScheduledThreadPool(properties.getRetryThreads());
+    public ScheduledExecutorService durableScheduler() {
+        return Executors.newSingleThreadScheduledExecutor();
+    }
+
+    /** Thread pool used for the actual retry work, sized by durable.retry-threads (default 2). */
+    @Bean(name = "durableRetryExecutor")
+    @ConditionalOnMissingBean(name = "durableRetryExecutor")
+    public ExecutorService durableRetryExecutor(DurableProperties properties) {
+        return Executors.newFixedThreadPool(properties.getRetryThreads());
     }
 
     @Bean
@@ -79,7 +88,9 @@ public class DurableAutoConfiguration {
                                            @Qualifier("durableDeadLetterStore") DurableStore durableDeadLetterStore,
                                            @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper,
                                            ApplicationContext applicationContext,
-                                           @Qualifier("durableScheduler") ScheduledExecutorService durableScheduler) {
-        return new DurableRecovery(durableStore, durableDeadLetterStore, durableObjectMapper, applicationContext, durableScheduler);
+                                           @Qualifier("durableScheduler") ScheduledExecutorService durableScheduler,
+                                           @Qualifier("durableRetryExecutor") ExecutorService durableRetryExecutor) {
+        return new DurableRecovery(durableStore, durableDeadLetterStore, durableObjectMapper,
+                applicationContext, durableScheduler, durableRetryExecutor);
     }
 }

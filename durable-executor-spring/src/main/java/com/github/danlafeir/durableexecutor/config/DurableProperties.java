@@ -25,9 +25,16 @@ public class DurableProperties {
     private String deadLetterPath = "./durable-dlq";
 
     /**
-     * Number of threads used for scheduled retry execution.
+     * Number of threads used for retry execution.
      */
     private int retryThreads = 2;
+
+    /**
+     * Minimum age of a -deleted.msgpack file before it is considered stuck and routed to
+     * the dead letter queue. Provides a safety window against a live finalizeDelete() call
+     * being mistaken for a crash-interrupted cleanup.
+     */
+    private java.time.Duration stuckGracePeriod = java.time.Duration.ofSeconds(30);
 
     public String getStorePath() { return storePath; }
     public void setStorePath(String storePath) { this.storePath = storePath; }
@@ -37,6 +44,9 @@ public class DurableProperties {
 
     public int getRetryThreads() { return retryThreads; }
     public void setRetryThreads(int retryThreads) { this.retryThreads = retryThreads; }
+
+    public java.time.Duration getStuckGracePeriod() { return stuckGracePeriod; }
+    public void setStuckGracePeriod(java.time.Duration stuckGracePeriod) { this.stuckGracePeriod = stuckGracePeriod; }
 
     private DlqEndpoint dlqEndpoint = new DlqEndpoint();
 

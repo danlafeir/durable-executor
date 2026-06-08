@@ -56,21 +56,26 @@ public class DurableAspect {
             log.debug("Durable execution opened: {}", executionId);
         }
 
+        // Isolate the business method — only method exceptions belong in this catch.
+        Object result;
         try {
-            Object result = joinPoint.proceed();
-            store.markDeleted(executionId);  // atomic commit — crash-safe from this point
-            try {
-                store.finalizeDelete(executionId);
-                log.debug("Durable execution closed: {}", executionId);
-            } catch (Exception e) {
-                log.warn("Finalizing close failed for {}; reverting to pending state for retry. Cause: {}", executionId, e.getMessage());
-                store.unmarkDeleted(executionId);
-            }
-            return result;
+            result = joinPoint.proceed();
         } catch (Throwable t) {
             log.warn("Durable execution {} failed; record kept for recovery. Cause: {}", executionId, t.getMessage());
             throw t;
         }
+
+        // Method succeeded. markDeleted() is the atomic commit point; if it throws,
+        // the DurableStoreException propagates to the caller (the .msgpack stays for retry).
+        store.markDeleted(executionId);
+        try {
+            store.finalizeDelete(executionId);
+            log.debug("Durable execution closed: {}", executionId);
+        } catch (Exception e) {
+            log.warn("Finalizing close failed for {}; reverting to pending state for retry. Cause: {}", executionId, e.getMessage());
+            store.unmarkDeleted(executionId);
+        }
+        return result;
     }
 
     private String resolveId(Durable durable) {

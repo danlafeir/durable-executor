@@ -29,7 +29,8 @@ import static org.awaitility.Awaitility.await;
 @SpringBootTest(classes = {DurableExecutionTest.TestConfig.class, DurableAutoConfiguration.class})
 @TestPropertySource(properties = {
     "durable.store-path=${java.io.tmpdir}/durable-test-${random.uuid}",
-    "durable.dead-letter-path=${java.io.tmpdir}/durable-dlq-${random.uuid}"
+    "durable.dead-letter-path=${java.io.tmpdir}/durable-dlq-${random.uuid}",
+    "durable.stuck-grace-period=PT0S"
 })
 class DurableExecutionTest {
 
@@ -49,6 +50,7 @@ class DurableExecutionTest {
 
     @BeforeEach
     void clearStore() {
+        OrderService.processed.clear();
         durableStore.loadAll().keySet().forEach(durableStore::delete);
         durableStore.loadAllDeleted().keySet().forEach(durableStore::finalizeDelete);
         deadLetterStore.loadAll().keySet().forEach(deadLetterStore::delete);
