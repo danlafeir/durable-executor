@@ -18,8 +18,10 @@ public @interface Durable {
 
     /**
      * Optional stable execution ID. When empty a UUID is generated per invocation.
-     * Supply a fixed or derived value to make the execution idempotent across
-     * re-deliveries (only the first open record wins).
+     * Supply a fixed or derived value to correlate a recovery record with a specific
+     * logical operation. Concurrent live calls with the same ID are not deduplicated —
+     * idempotency of the method body is the caller's responsibility.
+     * Note: IDs must not end with {@code -deleted} (reserved for the commit-marker suffix).
      */
     String executionId() default "";
 }

@@ -11,6 +11,9 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationListener;
 
+import org.springframework.util.ClassUtils;
+
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.Set;
@@ -62,7 +65,7 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
 
     @Override
     public void onApplicationEvent(ApplicationReadyEvent event) {
-        runRecovery("startup");
+        retryExecutor.submit(() -> runRecovery("startup"));
         scheduler.scheduleAtFixedRate(
                 () -> runRecovery("scheduled"),
                 RETRY_INTERVAL_MINUTES, RETRY_INTERVAL_MINUTES, TimeUnit.MINUTES);
@@ -125,8 +128,10 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
                     execution.getExecutionId(), execution.getTargetClassName(), execution.getMethodName());
             recover(execution);
         } catch (Exception e) {
+            Throwable cause = e instanceof InvocationTargetException ite && ite.getCause() != null
+                    ? ite.getCause() : e;
             log.error("Execution {} failed, moving to dead letter queue. Cause: {}",
-                    execution.getExecutionId(), e.getMessage(), e);
+                    execution.getExecutionId(), cause.getMessage(), e);
             sendToDeadLetter(execution);
         }
     }
@@ -167,9 +172,10 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
     }
 
     private Class<?>[] resolveParamTypes(String[] typeNames) throws ClassNotFoundException {
+        ClassLoader classLoader = applicationContext.getClassLoader();
         Class<?>[] types = new Class<?>[typeNames.length];
         for (int i = 0; i < typeNames.length; i++) {
-            types[i] = resolvePrimitive(typeNames[i]);
+            types[i] = ClassUtils.forName(typeNames[i], classLoader);
         }
         return types;
     }
@@ -180,20 +186,6 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
             args[i] = objectMapper.readValue(serialized[i], types[i]);
         }
         return args;
-    }
-
-    private Class<?> resolvePrimitive(String name) throws ClassNotFoundException {
-        return switch (name) {
-            case "int"     -> int.class;
-            case "long"    -> long.class;
-            case "double"  -> double.class;
-            case "float"   -> float.class;
-            case "boolean" -> boolean.class;
-            case "byte"    -> byte.class;
-            case "short"   -> short.class;
-            case "char"    -> char.class;
-            default        -> Class.forName(name);
-        };
     }
 
     @Override

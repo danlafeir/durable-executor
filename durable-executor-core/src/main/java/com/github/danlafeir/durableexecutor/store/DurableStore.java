@@ -37,23 +37,30 @@ public class DurableStore {
     private final Path storeDir;
     private final ObjectMapper objectMapper;
     private final Duration stuckGrace;
-    private volatile boolean dirInitialized = false;
-
     public DurableStore(Path storeDir, ObjectMapper objectMapper, Duration stuckGrace) {
         this.storeDir = storeDir;
         this.objectMapper = objectMapper;
         this.stuckGrace = stuckGrace;
+        try {
+            Files.createDirectories(storeDir);
+        } catch (IOException e) {
+            throw new DurableStoreException("Failed to create store directory " + storeDir, e);
+        }
     }
 
     public void save(DurableExecution execution) {
+        String id = execution.getExecutionId();
+        if (id.endsWith("-deleted")) {
+            throw new DurableStoreException(
+                    "executionId must not end with \"-deleted\" (conflicts with the commit-marker suffix): " + id, null);
+        }
         try {
-            ensureDirectory();
-            Path tmp = storeDir.resolve(execution.getExecutionId() + ".tmp");
-            Path file = storeDir.resolve(execution.getExecutionId() + PENDING_SUFFIX);
+            Path tmp = storeDir.resolve(id + ".tmp");
+            Path file = storeDir.resolve(id + PENDING_SUFFIX);
             objectMapper.writeValue(tmp.toFile(), execution);
             Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException e) {
-            throw new DurableStoreException("Failed to save execution " + execution.getExecutionId(), e);
+            throw new DurableStoreException("Failed to save execution " + id, e);
         }
     }
 
@@ -177,13 +184,6 @@ public class DurableStore {
             log.error("Failed to list durable store directory {}", storeDir, e);
         }
         return result;
-    }
-
-    private void ensureDirectory() throws IOException {
-        if (!dirInitialized) {
-            Files.createDirectories(storeDir);
-            dirInitialized = true;
-        }
     }
 
     public record StoreScan(

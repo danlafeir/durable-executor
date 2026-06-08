@@ -8,7 +8,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * Example application.yml:
  *
  *   durable:
- *     store-path: /var/data/durable-executions.json
+ *     store-path: /var/data/durable-executions
  */
 @ConfigurationProperties(prefix = "durable")
 public class DurableProperties {
