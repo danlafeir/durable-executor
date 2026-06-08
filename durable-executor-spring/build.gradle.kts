@@ -45,13 +45,15 @@ publishing {
                 url.set("https://github.com/danlafeir/durable-executor")
                 licenses {
                     license {
-                        name.set("Apache License, Version 2.0")
-                        url.set("https://www.apache.org/licenses/LICENSE-2.0")
+                        name.set("GNU General Public License v3.0")
+                        url.set("https://www.gnu.org/licenses/gpl-3.0")
                     }
                 }
                 developers {
                     developer {
                         id.set("danlafeir")
+                        name.set("Dan Lafeir")
+                        email.set("danlafeir@gmail.com")
                     }
                 }
                 scm {
