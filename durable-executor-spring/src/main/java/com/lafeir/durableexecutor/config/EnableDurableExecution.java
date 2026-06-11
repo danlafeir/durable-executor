@@ -1,4 +1,4 @@
-package com.github.danlafeir.durableexecutor.config;
+package com.lafeir.durableexecutor.config;
 
 import org.springframework.context.annotation.Import;
 

@@ -1,10 +1,10 @@
-package com.github.danlafeir.durableexecutor;
+package com.lafeir.durableexecutor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.danlafeir.durableexecutor.annotation.Durable;
-import com.github.danlafeir.durableexecutor.config.DurableAutoConfiguration;
-import com.github.danlafeir.durableexecutor.model.DurableExecution;
-import com.github.danlafeir.durableexecutor.store.DurableStore;
+import com.lafeir.durableexecutor.annotation.Durable;
+import com.lafeir.durableexecutor.config.DurableAutoConfiguration;
+import com.lafeir.durableexecutor.model.DurableExecution;
+import com.lafeir.durableexecutor.store.DurableStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

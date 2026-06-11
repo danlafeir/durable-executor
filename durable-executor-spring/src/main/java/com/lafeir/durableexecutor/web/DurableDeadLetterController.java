@@ -1,7 +1,7 @@
-package com.github.danlafeir.durableexecutor.web;
+package com.lafeir.durableexecutor.web;
 
-import com.github.danlafeir.durableexecutor.model.DurableExecution;
-import com.github.danlafeir.durableexecutor.store.DurableStore;
+import com.lafeir.durableexecutor.model.DurableExecution;
+import com.lafeir.durableexecutor.store.DurableStore;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 

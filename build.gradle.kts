@@ -3,7 +3,7 @@ plugins {
 }
 
 allprojects {
-    group = "com.github.danlafeir"
+    group = "com.lafeir"
     version = "0.1.0"
 }
 

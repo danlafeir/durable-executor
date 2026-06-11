@@ -1,4 +1,4 @@
-package com.github.danlafeir.durableexecutor;
+package com.lafeir.durableexecutor;
 
 /**
  * Signals a failure to the {@code @Durable} framework from within a method body,

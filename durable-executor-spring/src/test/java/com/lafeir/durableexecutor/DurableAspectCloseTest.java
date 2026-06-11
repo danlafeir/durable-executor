@@ -1,10 +1,10 @@
-package com.github.danlafeir.durableexecutor;
+package com.lafeir.durableexecutor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.danlafeir.durableexecutor.DurableContext;
-import com.github.danlafeir.durableexecutor.annotation.Durable;
-import com.github.danlafeir.durableexecutor.aspect.DurableAspect;
-import com.github.danlafeir.durableexecutor.store.DurableStore;
+import com.lafeir.durableexecutor.DurableContext;
+import com.lafeir.durableexecutor.annotation.Durable;
+import com.lafeir.durableexecutor.aspect.DurableAspect;
+import com.lafeir.durableexecutor.store.DurableStore;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.junit.jupiter.api.BeforeEach;

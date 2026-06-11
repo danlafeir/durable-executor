@@ -1,9 +1,9 @@
-package com.github.danlafeir.durableexecutor.config;
+package com.lafeir.durableexecutor.config;
 
-import com.github.danlafeir.durableexecutor.aspect.DurableAspect;
-import com.github.danlafeir.durableexecutor.recovery.DurableRecovery;
-import com.github.danlafeir.durableexecutor.store.DurableStore;
-import com.github.danlafeir.durableexecutor.web.DurableDeadLetterController;
+import com.lafeir.durableexecutor.aspect.DurableAspect;
+import com.lafeir.durableexecutor.recovery.DurableRecovery;
+import com.lafeir.durableexecutor.store.DurableStore;
+import com.lafeir.durableexecutor.web.DurableDeadLetterController;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;

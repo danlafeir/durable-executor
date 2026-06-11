@@ -1,8 +1,8 @@
-package com.github.danlafeir.durableexecutor.recovery;
+package com.lafeir.durableexecutor.recovery;
 
-import com.github.danlafeir.durableexecutor.aspect.DurableAspect;
-import com.github.danlafeir.durableexecutor.model.DurableExecution;
-import com.github.danlafeir.durableexecutor.store.DurableStore;
+import com.lafeir.durableexecutor.aspect.DurableAspect;
+import com.lafeir.durableexecutor.model.DurableExecution;
+import com.lafeir.durableexecutor.store.DurableStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

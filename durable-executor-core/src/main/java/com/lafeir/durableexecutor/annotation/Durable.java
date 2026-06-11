@@ -1,4 +1,4 @@
-package com.github.danlafeir.durableexecutor.annotation;
+package com.lafeir.durableexecutor.annotation;
 
 import java.lang.annotation.*;
 

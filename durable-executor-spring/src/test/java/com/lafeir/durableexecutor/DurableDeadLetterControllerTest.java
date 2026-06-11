@@ -1,8 +1,8 @@
-package com.github.danlafeir.durableexecutor;
+package com.lafeir.durableexecutor;
 
-import com.github.danlafeir.durableexecutor.model.DurableExecution;
-import com.github.danlafeir.durableexecutor.store.DurableStore;
-import com.github.danlafeir.durableexecutor.web.DurableDeadLetterController;
+import com.lafeir.durableexecutor.model.DurableExecution;
+import com.lafeir.durableexecutor.store.DurableStore;
+import com.lafeir.durableexecutor.web.DurableDeadLetterController;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;

@@ -1,6 +1,6 @@
-package com.github.danlafeir.durableexecutor.store;
+package com.lafeir.durableexecutor.store;
 
-import com.github.danlafeir.durableexecutor.model.DurableExecution;
+import com.lafeir.durableexecutor.model.DurableExecution;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
