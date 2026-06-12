@@ -45,6 +45,12 @@ public class DurableAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    public DurableStorePathValidator durableStorePathValidator(DurableProperties properties) {
+        return new DurableStorePathValidator(properties);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public DurableStore durableStore(DurableProperties properties,
                                      @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper) {
         return new DurableStore(Path.of(properties.getStorePath()), durableObjectMapper,

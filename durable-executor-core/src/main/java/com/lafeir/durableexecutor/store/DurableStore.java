@@ -68,8 +68,13 @@ public class DurableStore {
         this.leaseDuration = leaseDuration;
         try {
             Files.createDirectories(storeDir);
+            // Fail fast on a read-only store: createDirectories is a no-op on an existing directory,
+            // so probe an actual write — otherwise durability silently fails at the first save().
+            Path probe = Files.createTempFile(storeDir, ".durable-writecheck", ".tmp");
+            Files.delete(probe);
         } catch (IOException e) {
-            throw new DurableStoreException("Failed to create store directory " + storeDir, e);
+            throw new DurableStoreException(
+                    "Durable store directory " + storeDir + " is not writable; durable records cannot be persisted", e);
         }
     }
 

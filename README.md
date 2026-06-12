@@ -78,6 +78,10 @@ durable:
 
 `stuck-grace-period` controls how long a commit-marker file (`{id}-deleted.msgpack`) must exist before it is treated as a crash remnant and routed to the DLQ. This window protects against a live `finalizeDelete()` call being misread as a crash.
 
+### Persistent storage
+
+The store is only as durable as the directory behind it. The default `store-path`/`dead-letter-path` are **relative** and resolve under the JVM working directory — in a container that is the ephemeral writable layer, so records are lost on restart and "durable" execution is an illusion. **Mount a persistent volume and set absolute paths to it.** On startup the library warns when a configured path is relative or under `/tmp`, and **fails fast** if the directory is not writable (a non-writable store cannot persist anything).
+
 ### Retry policy
 
 A recovery attempt that fails does **not** immediately dead-letter the record. The attempt count is incremented and persisted, and the next attempt is scheduled after an exponential backoff — `retry-backoff × retry-backoff-multiplier^(attempt-1)`, capped at `retry-backoff-max`. Only once `max-attempts` is reached does the record move to the DLQ. The defaults retry at 30s, 1m, 2m, 4m, then dead-letter on the fifth failure.
