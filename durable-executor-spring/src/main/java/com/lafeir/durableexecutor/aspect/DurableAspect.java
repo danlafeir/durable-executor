@@ -55,52 +55,60 @@ public class DurableAspect {
 
         String executionId = isRecovery ? recoveryId : resolveId(durable);
 
-        if (!isRecovery) {
-            store.save(buildRecord(joinPoint, executionId));
-            log.debug("Durable execution opened: {}", executionId);
-        }
-
-        // Isolate the business method — only method exceptions belong in this catch.
-        Object result;
-        boolean markedFailed = false;
-        String failureReason = null;
+        // Mark live before the record exists on disk and keep it marked until the close
+        // completes, so a concurrent recovery scan never mistakes this still-running
+        // execution for an abandoned one and re-invokes it.
+        store.markLive(executionId);
         try {
-            result = joinPoint.proceed();
-            markedFailed = DurableContext.isMarkedFailed();
-            failureReason = DurableContext.getFailureReason();
-        } catch (Throwable t) {
-            log.warn("Durable execution {} failed; record kept for recovery. Cause: {}", executionId, t.getMessage());
-            throw t;
-        } finally {
-            DurableContext.clear();
-        }
-
-        if (markedFailed) {
-            String reason = (failureReason != null && !failureReason.isEmpty()) ? failureReason : "(no reason given)";
-            log.warn("Durable execution {} signalled failed via DurableContext; record kept for recovery. Reason: {}", executionId, reason);
-            return result;
-        }
-
-        // Method succeeded — close the record.
-        if (durable.closeMode() == Durable.CloseMode.TRANSACTIONAL) {
-            // Two-phase close: atomic rename to commit-marker, then delete.
-            // If the JVM crashes between the two steps the marker is picked up by
-            // recovery and routed to the DLQ (no retry). Prefer for non-idempotent methods.
-            store.markDeleted(executionId);
-            try {
-                store.finalizeDelete(executionId);
-            } catch (Exception e) {
-                log.warn("Finalizing close failed for {}; reverting to pending state for retry. Cause: {}", executionId, e.getMessage());
-                store.unmarkDeleted(executionId);
+            if (!isRecovery) {
+                store.save(buildRecord(joinPoint, executionId));
+                log.debug("Durable execution opened: {}", executionId);
             }
-        } else {
-            // Single-step close: direct delete of the pending record.
-            // If the JVM crashes before the delete completes the method is retried once.
-            // Prefer for idempotent methods — avoids DLQ noise from stuck commit-markers.
-            store.delete(executionId);
+
+            // Isolate the business method — only method exceptions belong in this catch.
+            Object result;
+            boolean markedFailed = false;
+            String failureReason = null;
+            try {
+                result = joinPoint.proceed();
+                markedFailed = DurableContext.isMarkedFailed();
+                failureReason = DurableContext.getFailureReason();
+            } catch (Throwable t) {
+                log.warn("Durable execution {} failed; record kept for recovery. Cause: {}", executionId, t.getMessage());
+                throw t;
+            } finally {
+                DurableContext.clear();
+            }
+
+            if (markedFailed) {
+                String reason = (failureReason != null && !failureReason.isEmpty()) ? failureReason : "(no reason given)";
+                log.warn("Durable execution {} signalled failed via DurableContext; record kept for recovery. Reason: {}", executionId, reason);
+                return result;
+            }
+
+            // Method succeeded — close the record.
+            if (durable.closeMode() == Durable.CloseMode.TRANSACTIONAL) {
+                // Two-phase close: atomic rename to commit-marker, then delete.
+                // If the JVM crashes between the two steps the marker is picked up by
+                // recovery and routed to the DLQ (no retry). Prefer for non-idempotent methods.
+                store.markDeleted(executionId);
+                try {
+                    store.finalizeDelete(executionId);
+                } catch (Exception e) {
+                    log.warn("Finalizing close failed for {}; reverting to pending state for retry. Cause: {}", executionId, e.getMessage());
+                    store.unmarkDeleted(executionId);
+                }
+            } else {
+                // Single-step close: direct delete of the pending record.
+                // If the JVM crashes before the delete completes the method is retried once.
+                // Prefer for idempotent methods — avoids DLQ noise from stuck commit-markers.
+                store.delete(executionId);
+            }
+            log.debug("Durable execution closed: {}", executionId);
+            return result;
+        } finally {
+            store.markNotLive(executionId);
         }
-        log.debug("Durable execution closed: {}", executionId);
-        return result;
     }
 
     private String resolveId(Durable durable) {

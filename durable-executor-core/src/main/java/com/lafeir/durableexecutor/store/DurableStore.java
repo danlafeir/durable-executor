@@ -13,6 +13,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
@@ -37,6 +39,15 @@ public class DurableStore {
     private final Path storeDir;
     private final ObjectMapper objectMapper;
     private final Duration stuckGrace;
+
+    /**
+     * Execution IDs currently running in this process. A pending {id}.msgpack file means
+     * one of two things — a crashed execution that needs recovery, or one running right now —
+     * and the file alone can't tell them apart. The interceptor registers an ID here for the
+     * duration of a live call so scan() can exclude it from recovery candidates.
+     */
+    private final Set<String> live = ConcurrentHashMap.newKeySet();
+
     public DurableStore(Path storeDir, ObjectMapper objectMapper, Duration stuckGrace) {
         this.storeDir = storeDir;
         this.objectMapper = objectMapper;
@@ -46,6 +57,16 @@ public class DurableStore {
         } catch (IOException e) {
             throw new DurableStoreException("Failed to create store directory " + storeDir, e);
         }
+    }
+
+    /** Marks an execution as actively running in this process so scan() will not offer it for recovery. */
+    public void markLive(String executionId) {
+        live.add(executionId);
+    }
+
+    /** Clears the live mark once the execution has completed, succeeded or failed. */
+    public void markNotLive(String executionId) {
+        live.remove(executionId);
     }
 
     public void save(DurableExecution execution) {
@@ -145,6 +166,10 @@ public class DurableStore {
                             stuckDeleted.put(execution.getExecutionId(), execution);
                         }
                     } else if (name.endsWith(PENDING_SUFFIX)) {
+                        String id = name.substring(0, name.length() - PENDING_SUFFIX.length());
+                        if (live.contains(id)) {
+                            return; // running in this process right now — not a crash to recover
+                        }
                         DurableExecution execution = objectMapper.readValue(file.toFile(), DurableExecution.class);
                         pending.put(execution.getExecutionId(), execution);
                     }

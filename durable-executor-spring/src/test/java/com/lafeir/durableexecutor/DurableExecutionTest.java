@@ -19,7 +19,9 @@ import org.springframework.test.context.TestPropertySource;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,6 +53,7 @@ class DurableExecutionTest {
     @BeforeEach
     void clearStore() {
         OrderService.processed.clear();
+        OrderService.duringExecution = () -> {};
         durableStore.loadAll().keySet().forEach(durableStore::delete);
         durableStore.loadAllDeleted().keySet().forEach(durableStore::finalizeDelete);
         deadLetterStore.loadAll().keySet().forEach(deadLetterStore::delete);
@@ -104,6 +107,23 @@ class DurableExecutionTest {
             assertThat(OrderService.processed).contains("order-recovered:7");
             assertThat(durableStore.loadAll()).isEmpty();
         });
+    }
+
+    @Test
+    void liveExecutionIsNotOfferedForRecoveryWhileRunning() {
+        // A scan that lands while a @Durable method is still running must not return that
+        // execution as a recovery candidate — otherwise the periodic recovery re-invokes a
+        // method that is currently executing (concurrent double execution).
+        Set<String> pendingSeenDuringExecution = new HashSet<>();
+        OrderService.duringExecution = () ->
+                pendingSeenDuringExecution.addAll(durableStore.scan().pending().keySet());
+
+        orderService.liveProbe();
+
+        assertThat(pendingSeenDuringExecution)
+                .as("a still-running execution must not be a recovery candidate")
+                .doesNotContain("live-probe-id");
+        assertThat(durableStore.loadAll()).isEmpty();
     }
 
     @Test
@@ -173,10 +193,16 @@ class DurableExecutionTest {
     static class OrderService {
 
         static final List<String> processed = new ArrayList<>();
+        static Runnable duringExecution = () -> {};
 
         @Durable
         public void processOrder(String orderId, int amount) {
             processed.add(orderId + ":" + amount);
+        }
+
+        @Durable(executionId = "live-probe-id")
+        public void liveProbe() {
+            duringExecution.run();
         }
 
         @Durable
