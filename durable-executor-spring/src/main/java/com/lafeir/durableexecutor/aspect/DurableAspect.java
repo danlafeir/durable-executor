@@ -39,16 +39,30 @@ public class DurableAspect {
 
     private final DurableStore store;
     private final ObjectMapper objectMapper;
+    private final AsyncReturnPolicy asyncReturnPolicy;
 
-    public DurableAspect(DurableStore store, ObjectMapper objectMapper) {
+    public DurableAspect(DurableStore store, ObjectMapper objectMapper, AsyncReturnPolicy asyncReturnPolicy) {
         this.store = store;
         this.objectMapper = objectMapper;
+        this.asyncReturnPolicy = asyncReturnPolicy;
     }
 
     @Around("@annotation(durable)")
     public Object around(ProceedingJoinPoint joinPoint, Durable durable) throws Throwable {
         // Clear any stale signal left by a prior invocation on a pooled thread.
         DurableContext.clear();
+
+        // Defence in depth alongside the startup validator: never open a record for an async method
+        // under REJECT, since it would be closed at hand-off and lose the still-running work.
+        if (asyncReturnPolicy == AsyncReturnPolicy.REJECT) {
+            Class<?> returnType = ((MethodSignature) joinPoint.getSignature()).getReturnType();
+            if (AsyncReturnTypes.isAsync(returnType)) {
+                throw new IllegalStateException("@Durable method "
+                        + joinPoint.getSignature().toShortString() + " returns the asynchronous type "
+                        + returnType.getName() + "; only synchronous methods are supported. "
+                        + "Set durable.async-return-policy=allow to opt out.");
+            }
+        }
 
         String recoveryId = RECOVERY_EXECUTION_ID.get();
         boolean isRecovery = recoveryId != null;

@@ -65,6 +65,7 @@ durable:
   retry-backoff: PT30S                       # base backoff delay (default 30s)
   retry-backoff-multiplier: 2.0              # backoff growth per attempt (default 2.0)
   retry-backoff-max: PT5M                    # backoff ceiling (default 5m)
+  async-return-policy: reject                # reject (default) | allow
 
   dlq-endpoint:
     enabled: true                            # expose GET /durable/dlq (default: false)
@@ -78,6 +79,17 @@ durable:
 A recovery attempt that fails does **not** immediately dead-letter the record. The attempt count is incremented and persisted, and the next attempt is scheduled after an exponential backoff — `retry-backoff × retry-backoff-multiplier^(attempt-1)`, capped at `retry-backoff-max`. Only once `max-attempts` is reached does the record move to the DLQ. The defaults retry at 30s, 1m, 2m, 4m, then dead-letter on the fifth failure.
 
 Backoff state lives on the record, so it survives a restart: the next attempt resumes from the persisted due time rather than starting over. The DLQ entry includes the final `attempts` count.
+
+### Synchronous methods only
+
+`@Durable` closes the record when the intercepted method **returns**. For a method that returns an asynchronous handle — `Future`, `CompletionStage`/`CompletableFuture`, or a reactive `Publisher` (`Mono`/`Flux`) — that is when the work is *handed off*, not when it finishes, so the record would be removed while the work is still running and a crash would lose it.
+
+`async-return-policy` controls this:
+
+| Value | Behaviour |
+|-------|-----------|
+| `reject` (default) | The application **fails to start** if any `@Durable` method returns an async type, with an error naming the method. Make the method synchronous (do the work before returning), or move `@Durable` to a synchronous method that wraps it. |
+| `allow` | Run the method as-is and log a startup warning. Durability is **not** guaranteed for the async portion — the record is closed at hand-off. Use only when the async work is reliable by other means. |
 
 ### Coordination mode
 

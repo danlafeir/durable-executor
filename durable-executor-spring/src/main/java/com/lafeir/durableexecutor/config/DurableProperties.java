@@ -1,5 +1,6 @@
 package com.lafeir.durableexecutor.config;
 
+import com.lafeir.durableexecutor.aspect.AsyncReturnPolicy;
 import com.lafeir.durableexecutor.store.CoordinationMode;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -67,6 +68,13 @@ public class DurableProperties {
     private CoordinationMode coordination = CoordinationMode.SINGLE_INSTANCE;
 
     /**
+     * How @Durable handles methods with an asynchronous return type (Future / CompletionStage /
+     * reactive Publisher). REJECT (default) fails fast because the record would close before the
+     * async work completes; ALLOW runs the method as-is with no durability guarantee for it.
+     */
+    private AsyncReturnPolicy asyncReturnPolicy = AsyncReturnPolicy.REJECT;
+
+    /**
      * SHARED_STORE only: how long a record's lease stays valid after its last heartbeat before
      * another instance may reclaim it. Renewed at roughly one third of this interval.
      */
@@ -98,6 +106,9 @@ public class DurableProperties {
 
     public CoordinationMode getCoordination() { return coordination; }
     public void setCoordination(CoordinationMode coordination) { this.coordination = coordination; }
+
+    public AsyncReturnPolicy getAsyncReturnPolicy() { return asyncReturnPolicy; }
+    public void setAsyncReturnPolicy(AsyncReturnPolicy asyncReturnPolicy) { this.asyncReturnPolicy = asyncReturnPolicy; }
 
     public java.time.Duration getLeaseDuration() { return leaseDuration; }
     public void setLeaseDuration(java.time.Duration leaseDuration) { this.leaseDuration = leaseDuration; }

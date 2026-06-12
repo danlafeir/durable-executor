@@ -1,6 +1,8 @@
 package com.lafeir.durableexecutor.config;
 
+import com.lafeir.durableexecutor.aspect.AsyncReturnPolicy;
 import com.lafeir.durableexecutor.aspect.DurableAspect;
+import com.lafeir.durableexecutor.aspect.DurableAsyncReturnValidator;
 import com.lafeir.durableexecutor.recovery.DurableRecovery;
 import com.lafeir.durableexecutor.recovery.RetryPolicy;
 import com.lafeir.durableexecutor.store.DurableStore;
@@ -18,6 +20,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
+import org.springframework.core.env.Environment;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 
@@ -59,8 +62,26 @@ public class DurableAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public DurableAspect durableAspect(@Qualifier("durableStore") DurableStore durableStore,
-                                       @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper) {
-        return new DurableAspect(durableStore, durableObjectMapper);
+                                       @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper,
+                                       DurableProperties properties) {
+        return new DurableAspect(durableStore, durableObjectMapper, properties.getAsyncReturnPolicy());
+    }
+
+    /**
+     * Reads the policy straight from the Environment (rather than the DurableProperties bean) so the
+     * BeanPostProcessor can be created early without pulling regular beans into premature init.
+     */
+    @Bean
+    public static DurableAsyncReturnValidator durableAsyncReturnValidator(Environment environment) {
+        String value = environment.getProperty("durable.async-return-policy", "reject").trim();
+        AsyncReturnPolicy policy;
+        try {
+            policy = value.isEmpty() ? AsyncReturnPolicy.REJECT : AsyncReturnPolicy.valueOf(value.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid durable.async-return-policy '" + value
+                    + "'; expected reject or allow");
+        }
+        return new DurableAsyncReturnValidator(policy);
     }
 
     /** Single-thread scheduler — used only for the 5-minute periodic trigger. */
