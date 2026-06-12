@@ -69,6 +69,19 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         scheduler.scheduleAtFixedRate(
                 () -> runRecovery("scheduled"),
                 RETRY_INTERVAL_MINUTES, RETRY_INTERVAL_MINUTES, TimeUnit.MINUTES);
+        if (pendingStore.isShared()) {
+            long heartbeatMillis = Math.max(1, pendingStore.getLeaseDuration().toMillis() / 3);
+            scheduler.scheduleAtFixedRate(
+                    this::renewLeases, heartbeatMillis, heartbeatMillis, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private void renewLeases() {
+        try {
+            pendingStore.renewLeases();
+        } catch (Exception e) {
+            log.warn("Lease renewal cycle failed", e);
+        }
     }
 
     private void runRecovery(String trigger) {
@@ -147,6 +160,12 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
     }
 
     private void recover(DurableExecution execution) throws Exception {
+        // In SHARED_STORE mode, claim the record before re-invoking. If a concurrent instance
+        // won the claim, skip quietly (no exception → not dead-lettered); the owner will run it.
+        if (!pendingStore.claim(execution.getExecutionId())) {
+            log.debug("Execution {} claimed by another instance; skipping recovery", execution.getExecutionId());
+            return;
+        }
         Class<?> targetClass = Class.forName(execution.getTargetClassName());
         Class<?>[] paramTypes = resolveParamTypes(execution.getParameterTypeNames());
         Method method = targetClass.getMethod(execution.getMethodName(), paramTypes);

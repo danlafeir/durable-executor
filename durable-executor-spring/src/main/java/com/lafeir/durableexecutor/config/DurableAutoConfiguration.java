@@ -21,6 +21,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 
 import java.nio.file.Path;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -42,7 +43,9 @@ public class DurableAutoConfiguration {
     @ConditionalOnMissingBean
     public DurableStore durableStore(DurableProperties properties,
                                      @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper) {
-        return new DurableStore(Path.of(properties.getStorePath()), durableObjectMapper, properties.getStuckGracePeriod());
+        return new DurableStore(Path.of(properties.getStorePath()), durableObjectMapper,
+                properties.getStuckGracePeriod(), properties.getCoordination(),
+                UUID.randomUUID().toString(), properties.getLeaseDuration());
     }
 
     @Bean(name = "durableDeadLetterStore")

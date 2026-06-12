@@ -1,5 +1,6 @@
 package com.lafeir.durableexecutor.config;
 
+import com.lafeir.durableexecutor.store.CoordinationMode;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -36,6 +37,20 @@ public class DurableProperties {
      */
     private java.time.Duration stuckGracePeriod = java.time.Duration.ofSeconds(30);
 
+    /**
+     * Coordination mode for the recovery scan. SINGLE_INSTANCE (default) assumes one active
+     * writer per store and tracks liveness in-memory only. SHARED_STORE adds a best-effort
+     * file lease so multiple instances sharing one store directory do not re-run each other's
+     * live executions.
+     */
+    private CoordinationMode coordination = CoordinationMode.SINGLE_INSTANCE;
+
+    /**
+     * SHARED_STORE only: how long a record's lease stays valid after its last heartbeat before
+     * another instance may reclaim it. Renewed at roughly one third of this interval.
+     */
+    private java.time.Duration leaseDuration = java.time.Duration.ofMinutes(1);
+
     public String getStorePath() { return storePath; }
     public void setStorePath(String storePath) { this.storePath = storePath; }
 
@@ -47,6 +62,12 @@ public class DurableProperties {
 
     public java.time.Duration getStuckGracePeriod() { return stuckGracePeriod; }
     public void setStuckGracePeriod(java.time.Duration stuckGracePeriod) { this.stuckGracePeriod = stuckGracePeriod; }
+
+    public CoordinationMode getCoordination() { return coordination; }
+    public void setCoordination(CoordinationMode coordination) { this.coordination = coordination; }
+
+    public java.time.Duration getLeaseDuration() { return leaseDuration; }
+    public void setLeaseDuration(java.time.Duration leaseDuration) { this.leaseDuration = leaseDuration; }
 
     private DlqEndpoint dlqEndpoint = new DlqEndpoint();
 

@@ -61,6 +61,10 @@ public class DurableAspect {
         store.markLive(executionId);
         try {
             if (!isRecovery) {
+                // Lease before the record exists so a sharing instance can't see a leaseless
+                // pending file and reclaim it in the gap between save and lease (recovery claims
+                // the lease itself before re-invoking, so the recovery path skips this).
+                store.acquireLease(executionId);
                 store.save(buildRecord(joinPoint, executionId));
                 log.debug("Durable execution opened: {}", executionId);
             }
@@ -108,6 +112,7 @@ public class DurableAspect {
             return result;
         } finally {
             store.markNotLive(executionId);
+            store.releaseLease(executionId);
         }
     }
 
