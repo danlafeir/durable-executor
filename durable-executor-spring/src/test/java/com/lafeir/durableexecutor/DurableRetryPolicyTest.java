@@ -1,6 +1,7 @@
 package com.lafeir.durableexecutor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lafeir.durableexecutor.DurableContext;
 import com.lafeir.durableexecutor.annotation.Durable;
 import com.lafeir.durableexecutor.config.DurableAutoConfiguration;
 import com.lafeir.durableexecutor.model.DurableExecution;
@@ -108,6 +109,29 @@ class DurableRetryPolicyTest {
         assertThat(deadLetterStore.loadAll().get("flaky-id").getAttempts()).isEqualTo(3);
     }
 
+    @Test
+    void markFailedDuringRecoveryIsAlsoBoundedByMaxAttempts() throws Exception {
+        // markFailed() returns normally rather than throwing, but during recovery it is still a
+        // failed attempt and must be subject to the same attempt budget as a thrown exception.
+        durableStore.save(new DurableExecution(
+                "markfail-id",
+                FlakyService.class.getName(),
+                "alwaysMarkFailed",
+                new String[]{"java.lang.String"},
+                new byte[][]{durableObjectMapper.writeValueAsBytes("order-x")},
+                Instant.now()));
+
+        triggerRecovery();
+
+        await().atMost(5, SECONDS).untilAsserted(() ->
+                assertThat(deadLetterStore.loadAll()).containsKey("markfail-id"));
+
+        assertThat(FlakyService.invocations.get())
+                .as("markFailed recovery is bounded, not retried forever")
+                .isEqualTo(3);
+        assertThat(durableStore.loadAll()).isEmpty();
+    }
+
     @Configuration
     static class TestConfig {
         @Bean
@@ -128,6 +152,12 @@ class DurableRetryPolicyTest {
             if (n <= failUntilAttempt) {
                 throw new RuntimeException("transient failure #" + n);
             }
+        }
+
+        @Durable(executionId = "markfail-id")
+        public void alwaysMarkFailed(String orderId) {
+            invocations.incrementAndGet();
+            DurableContext.markFailed("always");
         }
     }
 }

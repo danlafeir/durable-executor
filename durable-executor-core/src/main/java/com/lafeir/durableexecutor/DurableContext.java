@@ -59,4 +59,16 @@ public final class DurableContext {
     public static void clear() {
         FAILURE_REASON.remove();
     }
+
+    /**
+     * Thrown internally by the framework when a method signals {@link #markFailed()} during a
+     * recovery re-invocation, so the failure feeds the same attempt-counting and backoff path as
+     * a thrown exception. Never thrown back to a live caller — a live {@code markFailed()} returns
+     * normally and leaves the record for recovery.
+     */
+    public static final class MarkedFailedException extends RuntimeException {
+        public MarkedFailedException(String reason) {
+            super("Durable method signalled failure via markFailed(): " + reason);
+        }
+    }
 }

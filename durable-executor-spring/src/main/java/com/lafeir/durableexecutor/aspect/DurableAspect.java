@@ -86,6 +86,12 @@ public class DurableAspect {
 
             if (markedFailed) {
                 String reason = (failureReason != null && !failureReason.isEmpty()) ? failureReason : "(no reason given)";
+                if (isRecovery) {
+                    // During recovery a markFailed() is a failed attempt — surface it so the retry
+                    // policy counts it and eventually dead-letters, rather than re-running forever.
+                    log.warn("Durable recovery {} signalled failed via DurableContext; counts as a failed attempt. Reason: {}", executionId, reason);
+                    throw new DurableContext.MarkedFailedException(reason);
+                }
                 log.warn("Durable execution {} signalled failed via DurableContext; record kept for recovery. Reason: {}", executionId, reason);
                 return result;
             }
