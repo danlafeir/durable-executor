@@ -18,6 +18,10 @@ Durable execution for JVM applications. Persists in-flight method invocations to
 
 Records that fail every recovery attempt are moved to a dead letter queue (DLQ) rather than retried indefinitely.
 
+### Method arguments
+
+Arguments are serialized with Jackson (MessagePack) and, on recovery, deserialized against the method's declared **generic** parameter types — so `List<Order>`, `Map<String, Order>`, and the like are reconstructed with their concrete element types rather than raw `LinkedHashMap`s. Arguments must be Jackson-serializable. For a parameter whose declared type is a supertype, annotate the base type with `@JsonTypeInfo` so the concrete subtype round-trips. Without it: an interface or abstract declared type can't be constructed and the record is dead-lettered, while a concrete supertype deserializes as the base type, silently dropping subtype-specific fields.
+
 ## Spring Boot usage
 
 ```kotlin

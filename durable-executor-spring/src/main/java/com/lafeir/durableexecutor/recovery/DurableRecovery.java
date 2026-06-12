@@ -3,6 +3,7 @@ package com.lafeir.durableexecutor.recovery;
 import com.lafeir.durableexecutor.aspect.DurableAspect;
 import com.lafeir.durableexecutor.model.DurableExecution;
 import com.lafeir.durableexecutor.store.DurableStore;
+import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,6 +16,7 @@ import org.springframework.util.ClassUtils;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Type;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -224,7 +226,10 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         Class<?> targetClass = Class.forName(execution.getTargetClassName());
         Class<?>[] paramTypes = resolveParamTypes(execution.getParameterTypeNames());
         Method method = targetClass.getMethod(execution.getMethodName(), paramTypes);
-        Object[] args = deserializeArgs(execution.getSerializedArgs(), paramTypes);
+        // Deserialize against the method's *generic* parameter types, not the erased classes, so
+        // List<Order> comes back as List<Order> rather than List<LinkedHashMap>. @JsonTypeInfo-
+        // annotated parameter types also round-trip to their concrete subtype.
+        Object[] args = deserializeArgs(execution.getSerializedArgs(), method.getGenericParameterTypes());
         Object bean = applicationContext.getBean(targetClass);
         // setAccessible is required when the method's declaring class has non-public
         // visibility (e.g. a public method inside a package-private enclosing type).
@@ -254,10 +259,11 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         return types;
     }
 
-    private Object[] deserializeArgs(byte[][] serialized, Class<?>[] types) throws Exception {
+    private Object[] deserializeArgs(byte[][] serialized, Type[] genericTypes) throws Exception {
         Object[] args = new Object[serialized.length];
         for (int i = 0; i < serialized.length; i++) {
-            args[i] = objectMapper.readValue(serialized[i], types[i]);
+            JavaType javaType = objectMapper.getTypeFactory().constructType(genericTypes[i]);
+            args[i] = objectMapper.readValue(serialized[i], javaType);
         }
         return args;
     }
