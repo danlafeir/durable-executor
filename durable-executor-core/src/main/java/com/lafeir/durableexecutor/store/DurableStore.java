@@ -201,26 +201,14 @@ public class DurableStore {
     }
 
     /**
-     * Deletes the {id}-deleted.msgpack file. Throws on failure so callers can revert via unmarkDeleted().
+     * Deletes the {id}-deleted.msgpack commit marker. Throws on failure; the caller leaves the
+     * marker in place so the stuck-grace scan routes it to the DLQ rather than re-running it.
      */
     public void finalizeDelete(String executionId) {
         try {
             Files.deleteIfExists(storeDir.resolve(executionId + DELETED_SUFFIX));
         } catch (IOException e) {
             throw new DurableStoreException("Failed to finalize delete of execution " + executionId, e);
-        }
-    }
-
-    /**
-     * Reverts a markDeleted() by atomically renaming {id}-deleted.msgpack back to {id}.msgpack.
-     */
-    public void unmarkDeleted(String executionId) {
-        Path source = storeDir.resolve(executionId + DELETED_SUFFIX);
-        Path target = storeDir.resolve(executionId + PENDING_SUFFIX);
-        try {
-            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException e) {
-            log.error("Failed to revert deletion mark for execution {} — record may be in inconsistent state", executionId, e);
         }
     }
 

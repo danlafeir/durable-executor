@@ -52,6 +52,12 @@ public class DurableAspect {
 
         String recoveryId = RECOVERY_EXECUTION_ID.get();
         boolean isRecovery = recoveryId != null;
+        if (isRecovery) {
+            // Consume the recovery id immediately so a nested @Durable call on this same thread
+            // starts its own record instead of being treated as a recovery of this (the parent's)
+            // execution. The captured locals below drive this invocation's behaviour.
+            RECOVERY_EXECUTION_ID.remove();
+        }
 
         String executionId = isRecovery ? recoveryId : resolveId(durable);
 
@@ -96,17 +102,30 @@ public class DurableAspect {
                 return result;
             }
 
-            // Method succeeded — close the record.
+            // Method succeeded — close the record. Close is best-effort cleanup: an I/O error
+            // here must not fail the caller (the method already returned) and must not leave a
+            // pending record that recovery would re-run.
             if (durable.closeMode() == Durable.CloseMode.TRANSACTIONAL) {
                 // Two-phase close: atomic rename to commit-marker, then delete.
                 // If the JVM crashes between the two steps the marker is picked up by
                 // recovery and routed to the DLQ (no retry). Prefer for non-idempotent methods.
-                store.markDeleted(executionId);
                 try {
-                    store.finalizeDelete(executionId);
+                    store.markDeleted(executionId);
+                    try {
+                        store.finalizeDelete(executionId);
+                    } catch (Exception e) {
+                        // Marker is the commit point; leave it for the stuck-grace scan to route to
+                        // the DLQ (no retry). Reverting to pending here would re-run a succeeded method.
+                        log.warn("finalizeDelete failed for {}; commit marker left for DLQ reconciliation. Cause: {}",
+                                executionId, e.getMessage());
+                    }
                 } catch (Exception e) {
-                    log.warn("Finalizing close failed for {}; reverting to pending state for retry. Cause: {}", executionId, e.getMessage());
-                    store.unmarkDeleted(executionId);
+                    // Could not write the commit marker. The method already succeeded, so delete the
+                    // pending record directly so recovery does not re-run it. (Best-effort: if the
+                    // store is entirely unwritable this delete also fails and recovery retries.)
+                    log.warn("markDeleted failed for {} after the method succeeded; deleting the pending "
+                            + "record directly to avoid a re-run. Cause: {}", executionId, e.getMessage());
+                    store.delete(executionId);
                 }
             } else {
                 // Single-step close: direct delete of the pending record.

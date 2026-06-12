@@ -16,6 +16,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 /**
  * Verifies the close-path branch in DurableAspect: transactional vs. non-transactional.
@@ -67,6 +68,32 @@ class DurableAspectCloseTest {
         verify(store).delete("test-id");
         verify(store, never()).markDeleted(any());
         verify(store, never()).finalizeDelete(any());
+    }
+
+    @Test
+    void markDeletedFailureDoesNotFailCallerAndDeletesPendingRecord() throws Throwable {
+        Object sentinel = new Object();
+        doReturn(sentinel).when(joinPoint).proceed();
+        when(durable.closeMode()).thenReturn(Durable.CloseMode.TRANSACTIONAL);
+        doThrow(new DurableStore.DurableStoreException("disk error", null)).when(store).markDeleted("test-id");
+
+        Object result = aspect.around(joinPoint, durable);
+
+        assertSame(sentinel, result, "the method succeeded, so the caller must still get its result");
+        verify(store).delete("test-id"); // fell back to direct delete so recovery will not re-run it
+    }
+
+    @Test
+    void finalizeDeleteFailureLeavesMarkerWithoutRevertingToPending() throws Throwable {
+        doReturn(null).when(joinPoint).proceed();
+        when(durable.closeMode()).thenReturn(Durable.CloseMode.TRANSACTIONAL);
+        doThrow(new DurableStore.DurableStoreException("io error", null)).when(store).finalizeDelete("test-id");
+
+        aspect.around(joinPoint, durable); // must not throw
+
+        verify(store).markDeleted("test-id");
+        // marker is the commit point — left in place for the stuck-grace scan to DLQ, never reverted
+        verify(store, never()).delete(any());
     }
 
     @Test
