@@ -6,8 +6,8 @@ Durable execution for JVM applications. Persists in-flight method invocations to
 
 | Module | Artifact | Description |
 |--------|----------|-------------|
-| `durable-executor-core` | `com.github.danlafeir:durable-executor-core` | Framework-agnostic core: `@Durable` annotation, execution model, file-backed store |
-| `durable-executor-spring` | `com.github.danlafeir:durable-executor-spring` | Spring Boot integration: AOP aspect, autoconfiguration, startup recovery |
+| `durable-executor-core` | `com.lafeir:durable-executor-core` | Framework-agnostic core: `@Durable` annotation, execution model, file-backed store |
+| `durable-executor-spring` | `com.lafeir:durable-executor-spring` | Spring Boot integration: AOP aspect, autoconfiguration, startup recovery |
 
 ## How it works
 
@@ -23,14 +23,14 @@ Records that fail every recovery attempt are moved to a dead letter queue (DLQ) 
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("com.github.danlafeir:durable-executor-spring:0.1.0")
+    implementation("com.lafeir:durable-executor-spring:0.1.0")
 }
 ```
 
 ```xml
 <!-- pom.xml -->
 <dependency>
-    <groupId>com.github.danlafeir</groupId>
+    <groupId>com.lafeir</groupId>
     <artifactId>durable-executor-spring</artifactId>
     <version>0.1.0</version>
 </dependency>
