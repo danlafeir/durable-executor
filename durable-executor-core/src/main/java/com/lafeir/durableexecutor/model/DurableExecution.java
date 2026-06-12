@@ -13,6 +13,8 @@ public class DurableExecution {
     private String[] parameterTypeNames;
     private byte[][] serializedArgs;
     private Instant createdAt;
+    private int attempts;
+    private Instant nextAttemptAt;
 
     public DurableExecution() {}
 
@@ -48,4 +50,12 @@ public class DurableExecution {
 
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
+
+    /** Number of recovery attempts made so far. 0 for a record that has not yet been retried. */
+    public int getAttempts() { return attempts; }
+    public void setAttempts(int attempts) { this.attempts = attempts; }
+
+    /** Earliest time the next recovery attempt may run, or null when due immediately. */
+    public Instant getNextAttemptAt() { return nextAttemptAt; }
+    public void setNextAttemptAt(Instant nextAttemptAt) { this.nextAttemptAt = nextAttemptAt; }
 }

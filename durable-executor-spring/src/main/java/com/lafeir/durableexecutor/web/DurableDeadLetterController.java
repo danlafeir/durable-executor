@@ -29,7 +29,8 @@ public class DurableDeadLetterController {
             String targetClassName,
             String methodName,
             String[] parameterTypeNames,
-            Instant createdAt
+            Instant createdAt,
+            int attempts
     ) {
         static DeadLetterEntry from(DurableExecution e) {
             return new DeadLetterEntry(
@@ -37,7 +38,8 @@ public class DurableDeadLetterController {
                     e.getTargetClassName(),
                     e.getMethodName(),
                     e.getParameterTypeNames(),
-                    e.getCreatedAt()
+                    e.getCreatedAt(),
+                    e.getAttempts()
             );
         }
     }

@@ -2,6 +2,7 @@ package com.lafeir.durableexecutor.config;
 
 import com.lafeir.durableexecutor.aspect.DurableAspect;
 import com.lafeir.durableexecutor.recovery.DurableRecovery;
+import com.lafeir.durableexecutor.recovery.RetryPolicy;
 import com.lafeir.durableexecutor.store.DurableStore;
 import com.lafeir.durableexecutor.web.DurableDeadLetterController;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -92,8 +93,11 @@ public class DurableAutoConfiguration {
                                            @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper,
                                            ApplicationContext applicationContext,
                                            @Qualifier("durableScheduler") ScheduledExecutorService durableScheduler,
-                                           @Qualifier("durableRetryExecutor") ExecutorService durableRetryExecutor) {
+                                           @Qualifier("durableRetryExecutor") ExecutorService durableRetryExecutor,
+                                           DurableProperties properties) {
+        RetryPolicy retryPolicy = new RetryPolicy(properties.getMaxAttempts(), properties.getRetryBackoff(),
+                properties.getRetryBackoffMultiplier(), properties.getRetryBackoffMax());
         return new DurableRecovery(durableStore, durableDeadLetterStore, durableObjectMapper,
-                applicationContext, durableScheduler, durableRetryExecutor);
+                applicationContext, durableScheduler, durableRetryExecutor, retryPolicy);
     }
 }

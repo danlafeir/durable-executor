@@ -15,6 +15,8 @@ import org.springframework.util.ClassUtils;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -26,6 +28,12 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Retries open DurableExecution records on startup and every 5 minutes.
+ *
+ * A failed attempt increments the record's attempt count and, if the {@link RetryPolicy}
+ * budget is not yet exhausted, schedules the next attempt after an exponential backoff;
+ * the new attempt count and due time are persisted so backoff survives a restart. Only once
+ * the attempts are exhausted is the record moved to the dead letter queue. The periodic scan
+ * acts as a crash-safety net that re-picks up any record whose due time has passed.
  *
  * The periodic trigger runs on a dedicated single-thread ScheduledExecutorService so
  * long-running retries cannot starve the scheduler. Retry work runs on a separate
@@ -48,6 +56,7 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
     private final ApplicationContext applicationContext;
     private final ScheduledExecutorService scheduler;
     private final ExecutorService retryExecutor;
+    private final RetryPolicy retryPolicy;
     private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
 
     /**
@@ -62,13 +71,15 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
                            ObjectMapper objectMapper,
                            ApplicationContext applicationContext,
                            ScheduledExecutorService scheduler,
-                           ExecutorService retryExecutor) {
+                           ExecutorService retryExecutor,
+                           RetryPolicy retryPolicy) {
         this.pendingStore = pendingStore;
         this.deadLetterStore = deadLetterStore;
         this.objectMapper = objectMapper;
         this.applicationContext = applicationContext;
         this.scheduler = scheduler;
         this.retryExecutor = retryExecutor;
+        this.retryPolicy = retryPolicy;
     }
 
     @Override
@@ -103,6 +114,10 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
     }
 
     private void scheduleRetry(DurableExecution execution) {
+        Instant nextAttemptAt = execution.getNextAttemptAt();
+        if (nextAttemptAt != null && nextAttemptAt.isAfter(Instant.now())) {
+            return; // backing off — not due yet
+        }
         if (inFlight.add(execution.getExecutionId())) {
             try {
                 retryExecutor.submit(() -> {
@@ -152,9 +167,40 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         } catch (Exception e) {
             Throwable cause = e instanceof InvocationTargetException ite && ite.getCause() != null
                     ? ite.getCause() : e;
-            log.error("Execution {} failed, moving to dead letter queue. Cause: {}",
-                    execution.getExecutionId(), cause.getMessage(), e);
+            handleFailedAttempt(execution, cause, e);
+        }
+    }
+
+    private void handleFailedAttempt(DurableExecution execution, Throwable cause, Exception raw) {
+        String id = execution.getExecutionId();
+        execution.setAttempts(execution.getAttempts() + 1);
+        if (retryPolicy.exhausted(execution.getAttempts())) {
+            log.error("Execution {} failed after {} attempt(s), moving to dead letter queue. Cause: {}",
+                    id, execution.getAttempts(), cause.getMessage(), raw);
             sendToDeadLetter(execution);
+            return;
+        }
+        Duration backoff = retryPolicy.backoffAfter(execution.getAttempts());
+        execution.setNextAttemptAt(Instant.now().plus(backoff));
+        try {
+            // Persist the new attempt count and due time so the backoff survives a restart;
+            // the periodic scan re-picks it up if the in-memory schedule below is lost.
+            pendingStore.save(execution);
+        } catch (Exception persistError) {
+            log.error("Failed to persist retry state for {}; it will be retried on the next scan", id, persistError);
+            return;
+        }
+        log.warn("Execution {} failed (attempt {}/{}); retrying in {}. Cause: {}",
+                id, execution.getAttempts(), retryPolicy.maxAttempts(), backoff, cause.getMessage());
+        scheduleNextAttempt(execution, backoff);
+    }
+
+    private void scheduleNextAttempt(DurableExecution execution, Duration backoff) {
+        try {
+            scheduler.schedule(() -> scheduleRetry(execution), backoff.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            log.debug("Next retry not scheduled for {} (scheduler shutting down); the recovery scan will resume it",
+                    execution.getExecutionId());
         }
     }
 

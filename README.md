@@ -61,6 +61,10 @@ durable:
   stuck-grace-period: PT30S                  # age threshold for stuck-deleted files
   coordination: single-instance              # single-instance (default) | shared-store
   lease-duration: PT1M                       # shared-store only: lease TTL (default 1m)
+  max-attempts: 5                            # recovery attempts before DLQ (default 5)
+  retry-backoff: PT30S                       # base backoff delay (default 30s)
+  retry-backoff-multiplier: 2.0              # backoff growth per attempt (default 2.0)
+  retry-backoff-max: PT5M                    # backoff ceiling (default 5m)
 
   dlq-endpoint:
     enabled: true                            # expose GET /durable/dlq (default: false)
@@ -68,6 +72,12 @@ durable:
 ```
 
 `stuck-grace-period` controls how long a commit-marker file (`{id}-deleted.msgpack`) must exist before it is treated as a crash remnant and routed to the DLQ. This window protects against a live `finalizeDelete()` call being misread as a crash.
+
+### Retry policy
+
+A recovery attempt that fails does **not** immediately dead-letter the record. The attempt count is incremented and persisted, and the next attempt is scheduled after an exponential backoff — `retry-backoff × retry-backoff-multiplier^(attempt-1)`, capped at `retry-backoff-max`. Only once `max-attempts` is reached does the record move to the DLQ. The defaults retry at 30s, 1m, 2m, 4m, then dead-letter on the fifth failure.
+
+Backoff state lives on the record, so it survives a restart: the next attempt resumes from the persisted due time rather than starting over. The DLQ entry includes the final `attempts` count.
 
 ### Coordination mode
 

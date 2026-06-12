@@ -32,7 +32,8 @@ import static org.awaitility.Awaitility.await;
 @TestPropertySource(properties = {
     "durable.store-path=${java.io.tmpdir}/durable-test-${random.uuid}",
     "durable.dead-letter-path=${java.io.tmpdir}/durable-dlq-${random.uuid}",
-    "durable.stuck-grace-period=PT0S"
+    "durable.stuck-grace-period=PT0S",
+    "durable.max-attempts=1"
 })
 class DurableExecutionTest {
 
