@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -49,6 +50,13 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
     private final ExecutorService retryExecutor;
     private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
 
+    /**
+     * Dedicated heartbeat thread, created only in SHARED_STORE mode. Kept off {@code scheduler}
+     * so a slow {@code runRecovery} (full directory scan + inline DLQ writes, e.g. on NFS) can't
+     * stall lease renewal long enough for this instance's live leases to lapse and be reclaimed.
+     */
+    private ScheduledExecutorService heartbeatScheduler;
+
     public DurableRecovery(DurableStore pendingStore,
                            DurableStore deadLetterStore,
                            ObjectMapper objectMapper,
@@ -71,7 +79,8 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
                 RETRY_INTERVAL_MINUTES, RETRY_INTERVAL_MINUTES, TimeUnit.MINUTES);
         if (pendingStore.isShared()) {
             long heartbeatMillis = Math.max(1, pendingStore.getLeaseDuration().toMillis() / 3);
-            scheduler.scheduleAtFixedRate(
+            heartbeatScheduler = Executors.newSingleThreadScheduledExecutor();
+            heartbeatScheduler.scheduleAtFixedRate(
                     this::renewLeases, heartbeatMillis, heartbeatMillis, TimeUnit.MILLISECONDS);
         }
     }
@@ -209,6 +218,9 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
 
     @Override
     public void destroy() throws InterruptedException {
+        if (heartbeatScheduler != null) {
+            heartbeatScheduler.shutdownNow();
+        }
         scheduler.shutdown();
         retryExecutor.shutdown();
         if (!scheduler.awaitTermination(30, TimeUnit.SECONDS)) {
