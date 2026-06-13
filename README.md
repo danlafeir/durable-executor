@@ -71,8 +71,10 @@ durable:
   retry-backoff-max: PT5M                    # backoff ceiling (default 5m)
   async-return-policy: reject                # reject (default) | allow
 
+  dlq-retention: P7D                         # purge DLQ entries older than this (default: keep forever)
+
   dlq-endpoint:
-    enabled: true                            # expose GET /durable/dlq (default: false)
+    enabled: true                            # expose the DLQ HTTP endpoint (default: false)
     path: /durable/dlq                       # endpoint base path
 ```
 
@@ -87,6 +89,20 @@ The store is only as durable as the directory behind it. The default `store-path
 A recovery attempt that fails does **not** immediately dead-letter the record. The attempt count is incremented and persisted, and the next attempt is scheduled after an exponential backoff — `retry-backoff × retry-backoff-multiplier^(attempt-1)`, capped at `retry-backoff-max`. Only once `max-attempts` is reached does the record move to the DLQ. The defaults retry at 30s, 1m, 2m, 4m, then dead-letter on the fifth failure.
 
 Backoff state lives on the record, so it survives a restart: the next attempt resumes from the persisted due time rather than starting over. The DLQ entry includes the final `attempts` count.
+
+### Dead letter queue
+
+Records that exhaust their retries land in the DLQ. When `dlq-endpoint.enabled=true`, the following endpoints are exposed under `dlq-endpoint.path` (default `/durable/dlq`):
+
+| Method & path | Effect |
+|---------------|--------|
+| `GET {path}?offset=&limit=` | List entries (paged; default `limit=100`). Ids are listed cheaply and only the requested page is deserialized. The total is returned in the `X-Total-Count` header. |
+| `POST {path}/{id}/requeue` | Move an entry back to the pending store with a fresh retry budget (`attempts` reset) so recovery retries it. Use after fixing the cause. Returns `202`, or `404` if the id is unknown. |
+| `DELETE {path}/{id}` | Discard an entry. Returns `204`. |
+
+`dlq-retention` auto-purges entries older than the configured age (by file modification time) on the periodic recovery cycle; unset (the default) keeps them forever.
+
+> **Secure the endpoint.** It is disabled by default and exposes internal class/method names; `requeue` and `delete` mutate state. When you enable it, protect the path with your application's security (e.g. Spring Security) — the library does not authenticate requests.
 
 ### Synchronous methods only
 

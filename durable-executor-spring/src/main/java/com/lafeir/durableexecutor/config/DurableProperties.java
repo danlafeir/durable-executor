@@ -27,6 +27,12 @@ public class DurableProperties {
     private String deadLetterPath = "./durable-dlq";
 
     /**
+     * Auto-purge dead-letter entries older than this (by file modification time). Null (default)
+     * keeps them forever. The sweep runs on the periodic recovery cycle.
+     */
+    private java.time.Duration dlqRetention;
+
+    /**
      * Number of threads used for retry execution.
      */
     private int retryThreads = 2;
@@ -85,6 +91,9 @@ public class DurableProperties {
 
     public String getDeadLetterPath() { return deadLetterPath; }
     public void setDeadLetterPath(String deadLetterPath) { this.deadLetterPath = deadLetterPath; }
+
+    public java.time.Duration getDlqRetention() { return dlqRetention; }
+    public void setDlqRetention(java.time.Duration dlqRetention) { this.dlqRetention = dlqRetention; }
 
     public int getRetryThreads() { return retryThreads; }
     public void setRetryThreads(int retryThreads) { this.retryThreads = retryThreads; }

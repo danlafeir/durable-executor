@@ -59,6 +59,7 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
     private final ScheduledExecutorService scheduler;
     private final ExecutorService retryExecutor;
     private final RetryPolicy retryPolicy;
+    private final Duration dlqRetention;
     private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
 
     /**
@@ -74,7 +75,8 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
                            ApplicationContext applicationContext,
                            ScheduledExecutorService scheduler,
                            ExecutorService retryExecutor,
-                           RetryPolicy retryPolicy) {
+                           RetryPolicy retryPolicy,
+                           Duration dlqRetention) {
         this.pendingStore = pendingStore;
         this.deadLetterStore = deadLetterStore;
         this.objectMapper = objectMapper;
@@ -82,6 +84,7 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         this.scheduler = scheduler;
         this.retryExecutor = retryExecutor;
         this.retryPolicy = retryPolicy;
+        this.dlqRetention = dlqRetention;
     }
 
     @Override
@@ -109,9 +112,20 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
     private void runRecovery(String trigger) {
         DurableStore.StoreScan scan = pendingStore.scan();
         drainStuckDeleted(scan.stuckDeleted());
+        purgeExpiredDeadLetters();
         if (!scan.pending().isEmpty()) {
             log.info("[{}] Submitting {} pending execution(s) for retry", trigger, scan.pending().size());
             scan.pending().values().forEach(this::scheduleRetry);
+        }
+    }
+
+    private void purgeExpiredDeadLetters() {
+        if (dlqRetention == null) {
+            return;
+        }
+        int purged = deadLetterStore.purgeOlderThan(dlqRetention);
+        if (purged > 0) {
+            log.info("Purged {} dead-letter entr(ies) older than {}", purged, dlqRetention);
         }
     }
 

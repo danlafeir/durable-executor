@@ -14,6 +14,7 @@ import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -234,6 +235,55 @@ public class DurableStore {
     /** Returns all -deleted.msgpack files regardless of age. Used for test cleanup. */
     public Map<String, DurableExecution> loadAllDeleted() {
         return load(DELETED_SUFFIX);
+    }
+
+    /** Sorted ids of all stored records (excluding commit markers), without deserializing them — for paging. */
+    public List<String> listIds() {
+        if (!Files.exists(storeDir)) {
+            return List.of();
+        }
+        try (Stream<Path> files = Files.list(storeDir)) {
+            return files.map(p -> p.getFileName().toString())
+                    .filter(name -> name.endsWith(PENDING_SUFFIX) && !name.endsWith(DELETED_SUFFIX))
+                    .map(name -> name.substring(0, name.length() - PENDING_SUFFIX.length()))
+                    .sorted()
+                    .toList();
+        } catch (IOException e) {
+            log.error("Failed to list durable store directory {}", storeDir, e);
+            return List.of();
+        }
+    }
+
+    /** Loads a single record by id, or null if it is missing or unreadable. */
+    public DurableExecution loadById(String executionId) {
+        Path file = storeDir.resolve(executionId + PENDING_SUFFIX);
+        if (!Files.exists(file)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(file.toFile(), DurableExecution.class);
+        } catch (IOException e) {
+            log.warn("Failed to read execution {} ({})", executionId, e.getMessage());
+            return null;
+        }
+    }
+
+    /** Deletes records whose file was last modified before {@code now - age}; returns the count removed. */
+    public int purgeOlderThan(Duration age) {
+        Instant cutoff = Instant.now().minus(age);
+        int purged = 0;
+        for (String id : listIds()) {
+            Path file = storeDir.resolve(id + PENDING_SUFFIX);
+            try {
+                if (Files.getLastModifiedTime(file).toInstant().isBefore(cutoff)) {
+                    Files.deleteIfExists(file);
+                    purged++;
+                }
+            } catch (IOException e) {
+                log.warn("Failed to purge entry {} ({})", id, e.getMessage());
+            }
+        }
+        return purged;
     }
 
     /**

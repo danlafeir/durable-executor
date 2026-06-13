@@ -109,8 +109,9 @@ public class DurableAutoConfiguration {
     @ConditionalOnWebApplication(type = Type.SERVLET)
     @ConditionalOnProperty(prefix = "durable.dlq-endpoint", name = "enabled", havingValue = "true")
     public DurableDeadLetterController durableDeadLetterController(
+            @Qualifier("durableStore") DurableStore durableStore,
             @Qualifier("durableDeadLetterStore") DurableStore durableDeadLetterStore) {
-        return new DurableDeadLetterController(durableDeadLetterStore);
+        return new DurableDeadLetterController(durableStore, durableDeadLetterStore);
     }
 
     @Bean
@@ -125,6 +126,7 @@ public class DurableAutoConfiguration {
         RetryPolicy retryPolicy = new RetryPolicy(properties.getMaxAttempts(), properties.getRetryBackoff(),
                 properties.getRetryBackoffMultiplier(), properties.getRetryBackoffMax());
         return new DurableRecovery(durableStore, durableDeadLetterStore, durableObjectMapper,
-                applicationContext, durableScheduler, durableRetryExecutor, retryPolicy);
+                applicationContext, durableScheduler, durableRetryExecutor, retryPolicy,
+                properties.getDlqRetention());
     }
 }
