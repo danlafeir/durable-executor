@@ -1,5 +1,6 @@
 package com.lafeir.durableexecutor.recovery;
 
+import com.lafeir.durableexecutor.annotation.Durable;
 import com.lafeir.durableexecutor.aspect.DurableAspect;
 import com.lafeir.durableexecutor.model.DurableExecution;
 import com.lafeir.durableexecutor.store.DurableStore;
@@ -187,6 +188,11 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
             // signature is restored.
             log.error("{} Dead-lettering {} without retry.", e.getMessage(), execution.getExecutionId());
             sendToDeadLetter(execution);
+        } catch (AmbiguousTakeoverException e) {
+            // Non-idempotent record reclaimed across instances — we cannot prove the previous owner did
+            // not already run it, so route to the DLQ for adjudication rather than risk a double run.
+            log.warn(e.getMessage());
+            sendToDeadLetter(execution);
         } catch (Exception e) {
             Throwable cause = e instanceof InvocationTargetException ite && ite.getCause() != null
                     ? ite.getCause() : e;
@@ -260,6 +266,19 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
             pendingStore.releaseLease(execution.getExecutionId());
             throw new DurableTargetUnresolvableException(execution, e);
         }
+        // Shared-store: reclaiming a record means its lease expired, which on a shared filesystem is
+        // ambiguous — the previous owner may have crashed mid-execution (safe to re-run) or merely
+        // stalled and still be running it (re-running would double-execute). For a non-idempotent
+        // (TRANSACTIONAL) method the two cannot be told apart, so we do not re-invoke; the record is
+        // routed to the DLQ for operator adjudication, who can check whether the side effect landed.
+        // IDEMPOTENT methods are safe to repeat and are re-invoked. Single-instance recovery is exempt:
+        // a restart there unambiguously means the previous run ended, so TRANSACTIONAL records re-run.
+        if (pendingStore.isShared() && resolveCloseMode(method) == Durable.CloseMode.TRANSACTIONAL) {
+            // We claimed the lease above but will not invoke; release it before dead-lettering rather
+            // than leaving it for the orphan sweep (mirrors the unresolvable-target path).
+            pendingStore.releaseLease(execution.getExecutionId());
+            throw new AmbiguousTakeoverException(execution);
+        }
         // Deserialize against the method's *generic* parameter types, not the erased classes, so
         // List<Order> comes back as List<Order> rather than List<LinkedHashMap>. @JsonTypeInfo-
         // annotated parameter types also round-trip to their concrete subtype.
@@ -283,6 +302,14 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         }
     }
 
+    private Durable.CloseMode resolveCloseMode(Method method) {
+        Durable annotation = method.getAnnotation(Durable.class);
+        // A record exists only because @Durable fired at save time. If a deploy stripped the annotation
+        // but kept the method, idempotency can no longer be confirmed, so fall back to TRANSACTIONAL —
+        // the safe, DLQ-routing default — rather than risk an unguarded cross-instance re-run.
+        return annotation != null ? annotation.closeMode() : Durable.CloseMode.TRANSACTIONAL;
+    }
+
     private Class<?>[] resolveParamTypes(String[] typeNames) throws ClassNotFoundException {
         ClassLoader classLoader = applicationContext.getClassLoader();
         Class<?>[] types = new Class<?>[typeNames.length];
@@ -299,6 +326,21 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
             args[i] = objectMapper.readValue(serialized[i], javaType);
         }
         return args;
+    }
+
+    /**
+     * A non-idempotent (TRANSACTIONAL) record was reclaimed from an expired lease in shared-store mode.
+     * The previous owner's fate (crash vs. stall) is undecidable, so the record is routed to the DLQ
+     * for adjudication rather than re-run, which could double-execute.
+     */
+    static class AmbiguousTakeoverException extends RuntimeException {
+        AmbiguousTakeoverException(DurableExecution execution) {
+            super(String.format(
+                    "@Durable execution %s (%s.%s) was reclaimed from an expired lease in shared-store mode; a "
+                    + "non-idempotent (TRANSACTIONAL) method cannot be safely re-run across instances when the "
+                    + "previous owner's fate is ambiguous (crash vs. stall). Routing to the DLQ for adjudication.",
+                    execution.getExecutionId(), execution.getTargetClassName(), execution.getMethodName()));
+        }
     }
 
     /** A record's @Durable target class/method/bean no longer resolves — a permanent (non-retryable) failure. */
