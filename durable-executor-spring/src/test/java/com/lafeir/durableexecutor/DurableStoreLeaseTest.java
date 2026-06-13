@@ -118,6 +118,23 @@ class DurableStoreLeaseTest {
     }
 
     @Test
+    void renewalDoesNotStompALeaseAnotherInstanceTookOver() throws Exception {
+        DurableStore a = shared("owner-A", Duration.ofSeconds(30));
+        DurableStore b = shared("owner-B", Duration.ofSeconds(30));
+
+        a.save(execution("x"));
+        a.acquireLease("x");
+        a.markLive("x");      // A still believes it is running x
+        b.acquireLease("x");  // A stalled past its lease; B reclaimed it
+
+        a.renewLeases();      // A's heartbeat resumes — must NOT stamp itself back over B
+
+        assertThat(Files.readString(storeDir.resolve("x.lease")))
+                .as("a heartbeat for a lease another instance has taken over must not steal it back")
+                .isEqualTo("owner-B");
+    }
+
+    @Test
     void releaseRemovesOurOwnLease() {
         DurableStore a = shared("owner-A", Duration.ofSeconds(30));
 

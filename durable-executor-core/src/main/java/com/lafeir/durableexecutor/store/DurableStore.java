@@ -147,7 +147,19 @@ public class DurableStore {
             return;
         }
         for (String id : live) {
-            writeLease(id);
+            renewLeaseIfOwned(id);
+        }
+    }
+
+    /**
+     * Renews a lease only if we still own it. If this instance stalled long enough for another to
+     * reclaim the lease, blindly re-stamping it with our owner id would steal it back and put both
+     * instances on the record — the exact double-ownership the lease exists to prevent. A lease that
+     * has been taken over is left to its new owner.
+     */
+    private void renewLeaseIfOwned(String executionId) {
+        if (ownerId.equals(readLeaseOwner(executionId))) {
+            writeLease(executionId);
         }
     }
 
