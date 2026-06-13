@@ -134,6 +134,8 @@ A pending `{id}.msgpack` file means one of two things — an execution that cras
 >
 > See [docs/coordination.md](docs/coordination.md) for the design — the supported-storage contract, the self-fencing lease, how `visibility-lag`/`clock-skew` set the takeover margin, and precisely what at-most-once does and does not cover.
 
+> **On takeover, non-idempotent records go to the DLQ, not a re-run.** When a `shared-store` instance reclaims a record whose lease has expired, it cannot tell whether the previous owner crashed or merely stalled. A `TRANSACTIONAL` (default) method is therefore routed to the [DLQ](#dead-letter-queue) for operator adjudication rather than re-executed — the library never automatically double-executes a non-idempotent method across instances. `IDEMPOTENT` methods are re-run. The trade-off: `TRANSACTIONAL` + `shared-store` is **not self-healing** — expect DLQ entries proportional to your crash/stall rate. See [docs/shared-store-operations.md](docs/shared-store-operations.md) for the triage model and how to reduce it. (`single-instance` recovery still re-runs `TRANSACTIONAL` on restart — there a restart unambiguously means the previous run ended.)
+
 ### Plain Spring (no Boot)
 
 ```java

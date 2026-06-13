@@ -92,6 +92,15 @@ If your storage does not meet (1)–(4), run `single-instance` behind an externa
    (crash-after-success → DLQ, no retry) and `IDEMPOTENT` deletes directly (crash-after-success → one
    retry). A *fenced* close is different from crash-after-success and routes nowhere: the new owner is
    authoritative, so committing, deleting, or dead-lettering would corrupt its state.
+6. **DLQ safety valve on takeover.** When recovery reclaims a record (its lease expired — on a shared
+   filesystem an undecidable signal: the previous owner crashed, or merely stalled and is still
+   running), the `closeMode` decides the action. `IDEMPOTENT` → re-invoke (safe to repeat).
+   `TRANSACTIONAL` → **route to the DLQ, do not re-invoke** — the library will not automatically re-run
+   a non-idempotent method when it cannot prove the previous owner didn't already run it. An operator,
+   who can check whether the side effect actually landed, adjudicates the DLQ entry. This is what makes
+   the *taker* side safe; the self-fence (4) makes the *stalled owner* side safe. Together they bound
+   the effect to at-most-once across instances without a user-written checkpoint. Single-instance is
+   exempt — a restart there unambiguously means the previous run ended, so `TRANSACTIONAL` re-runs.
 
 ## What this delivers — and what it does not
 
@@ -100,28 +109,35 @@ If your storage does not meet (1)–(4), run `single-instance` behind an externa
 - Recovery is **single-claimant** — `claim()` resolves concurrent recovery attempts to one winner.
 - A stale owner **cannot corrupt the live owner's record** — it neither steals the commit rename nor
   pushes an actively-running record into the DLQ.
-- The double-execution window is **shrunk to a real stall longer than `L + Δ + skew`**, not just a
-  momentary race or a stale read within Δ.
+- The library **never automatically double-executes a `TRANSACTIONAL` method across instances.** The
+  combination of the self-fence (stalled owner touches nothing) and the DLQ safety valve (taker
+  routes ambiguous non-idempotent records to the DLQ instead of re-running) bounds the *effect* to
+  at-most-once. The residual ambiguity — did the previous owner's effect land 0 or 1 times? — is not
+  resolved automatically; it is surfaced as a DLQ entry for an operator to adjudicate.
 
-**Does not deliver:**
+**The cost (does not deliver for free):**
 
-- **At-most-once *effect* for an opaque method.** If an instance stalls mid-method, another takes the
-  record over and re-runs the side effect, and the first instance later resumes and completes its own
-  side effect, both happen. No close-time logic can prevent a side effect that already executed inside
-  the method body. The self-fence bounds at-most-once *ownership* of the record, not the effect.
+- **`TRANSACTIONAL` + shared-store is not self-healing.** A reclaimed non-idempotent record is **not**
+  auto-recovered — it lands in the DLQ and waits for an operator to verify and requeue. Expect DLQ
+  entries at volume proportional to your crash/stall rate. This is the deliberate trade — prefer
+  operator-mediated reconciliation over automatic duplication — and is the same preference `CloseMode`
+  already encodes, extended across instances. See [shared-store-operations.md](shared-store-operations.md).
+- **No fully-automatic at-most-once *effect*.** Closing the residual (0-or-1) gap without an operator
+  would need either a user checkpoint or a downstream-honored fencing token (next section).
 
-## The path to at-most-once *effect* (not yet built)
+## Fully-automatic at-most-once effect — alternatives not taken
 
-Two complementary options, neither of which the filesystem design adds on its own:
+The DLQ safety valve achieves no-double-execution today with no new public API, at the price of
+operator triage. Removing the operator from the loop would need one of:
 
 - **A user checkpoint** — e.g. `DurableContext.fence()` called immediately before the non-idempotent
-  side effect, which throws (aborting *before* the effect) if the lease can't be proven fresh. This is
-  the only thing that prevents the second side effect for an opaque method, because only the author
-  knows where the effect is. It is net-new public API and is deferred to a separate decision.
+  side effect, aborting *before* it if the lease can't be proven fresh. Only the author knows where
+  the effect is, so only they can place it. Net-new public API; **not taken** — the DLQ valve covers
+  the goal without burdening user code.
 - **A fencing token** — a monotonically increasing token handed out with the lease and checked by the
-  downstream resource, which rejects a stale writer. This gives exactly-once effect *if and only if*
-  the downstream honors it. A plain filesystem cannot mint a strong token cheaply; a DB/Redis/ZK
-  backend can — which is why this pairs naturally with the SPI below.
+  downstream resource, which rejects a stale writer. Exactly-once effect *iff* the downstream honors
+  it. A plain filesystem cannot mint a strong token cheaply; a DB/Redis/ZK backend can — which is why
+  this pairs naturally with the SPI below.
 
 ## Held in reserve: the SPI seam
 
@@ -135,17 +151,24 @@ earns its place when a second backend or a token the FS can't provide actually a
 
 ## Validation gate
 
-The README describes `shared-store` as **best-effort** and that language stays until the end-to-end
-chaos suite (`spring-durable-executor-sample/chaos.sh`) demonstrates these properties under real pod
-kills and induced stalls on the target filesystem. Discriminating unit tests cover each mechanism
-(stomp regression, waited-takeover margin, monotonic self-fence, fenced-close-touches-nothing), but a
-stronger guarantee claim in user-facing docs is earned by chaos validation, not by unit tests.
+The README describes `shared-store` as **best-effort** and that language stays until an end-to-end
+chaos suite demonstrates these properties under real pod kills and induced stalls on the target
+filesystem. Discriminating unit tests cover each mechanism (stomp regression, waited-takeover margin,
+monotonic self-fence, fenced-close-touches-nothing, takeover→DLQ routing), but a stronger guarantee
+claim in user-facing docs is earned by chaos validation, not by unit tests.
+
+The existing sample (`spring-durable-executor-sample`) runs **single-instance** (one RWO volume per
+StatefulSet pod), so it does not exercise this. Validating the shared-store guarantee needs a new
+scenario — a `ReadWriteMany` volume, `coordination: shared-store` — whose `validate.sh` treats a DLQ
+entry as the **expected** safety-valve outcome (reconcile/requeue), not a failure. A suite that counts
+any DLQ entry as failure cannot validate DLQ-as-safety-valve behavior.
 
 ## Open questions
 
 - **Target filesystem and its measured Δ.** Fixes the takeover margin and decides whether at-most-once
   is achievable at all for a given deployment. Defaults ship at Δ = 5s, skew = 1s — conservative for a
   strongly-consistent FS, **too low for NFS with default attribute caching**, where Δ must be raised.
-- **Whether to ship the `DurableContext.fence()` checkpoint** — the only way to close the double-effect
-  gap for opaque methods, weighed against adding public API.
 - **Whether a startup probe should measure Δ** rather than trusting a configured value.
+
+(The `DurableContext.fence()` checkpoint question is resolved: the DLQ safety valve covers the goal
+without new public API, so `fence()` is **not** being built — see the alternatives-not-taken section.)
