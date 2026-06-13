@@ -11,9 +11,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.msgpack.jackson.dataformat.MessagePackFactory;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.stream.IntStream;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -92,5 +101,92 @@ class DurableStoreLeaseTest {
         assertThat(single.claim("x")).isTrue();
         assertThat(storeDir.resolve("x.lease")).doesNotExist();
         assertThat(single.scan().pending()).containsKey("x");
+    }
+
+    @Test
+    void releaseLeavesALeaseReclaimedByAnotherInstanceInPlace() {
+        DurableStore a = shared("owner-A", Duration.ofSeconds(30));
+        DurableStore b = shared("owner-B", Duration.ofSeconds(30));
+
+        a.save(execution("x"));
+        a.acquireLease("x");
+        b.acquireLease("x"); // A's lease expired and B reclaimed it (now owned by B, still running)
+
+        a.releaseLease("x"); // A finishing late must not delete B's live lease
+
+        assertThat(storeDir.resolve("x.lease")).exists();
+    }
+
+    @Test
+    void releaseRemovesOurOwnLease() {
+        DurableStore a = shared("owner-A", Duration.ofSeconds(30));
+
+        a.save(execution("x"));
+        a.acquireLease("x");
+        a.releaseLease("x");
+
+        assertThat(storeDir.resolve("x.lease")).doesNotExist();
+    }
+
+    @Test
+    void scanSweepsAnExpiredOrphanedLease() throws Exception {
+        DurableStore a = shared("owner-A", Duration.ofSeconds(30));
+        a.acquireLease("orphan"); // a lease with no pending record (e.g. its record was dead-lettered)
+        Files.setLastModifiedTime(storeDir.resolve("orphan.lease"),
+                FileTime.from(Instant.now().minusSeconds(3600)));
+
+        a.scan();
+
+        assertThat(storeDir.resolve("orphan.lease")).doesNotExist();
+    }
+
+    @Test
+    void scanLeavesValidOrphansAndLeasesBackingARecordAlone() throws Exception {
+        DurableStore a = shared("owner-A", Duration.ofSeconds(30));
+        a.acquireLease("valid-orphan"); // orphan but not yet expired — owner may be mid-write
+        a.save(execution("backed"));
+        a.acquireLease("backed");
+        Files.setLastModifiedTime(storeDir.resolve("backed.lease"),
+                FileTime.from(Instant.now().minusSeconds(3600))); // expired, but the record still exists
+
+        a.scan();
+
+        assertThat(storeDir.resolve("valid-orphan.lease")).exists();
+        assertThat(storeDir.resolve("backed.lease")).exists();
+    }
+
+    @Test
+    void concurrentClaimsLeaveAWellFormedLeaseOwnedByOneClaimant() throws Exception {
+        // This pins lease *integrity* under contention, not mutual exclusion. claim() is
+        // write-then-read-back, so two simultaneous claims can both return true and cross-instance
+        // double execution remains possible by design (shared-store is documented best-effort).
+        // What must always hold: the unique-temp write leaves the lease file owned by exactly one
+        // claimant — never empty, truncated, or lost to a temp-file collision.
+        int n = 8;
+        DurableStore writer = shared("writer", Duration.ofSeconds(30));
+        writer.save(execution("x"));
+
+        List<String> owners = IntStream.range(0, n).mapToObj(i -> "owner-" + i).toList();
+        List<DurableStore> stores = owners.stream()
+                .map(o -> shared(o, Duration.ofSeconds(30)))
+                .toList();
+
+        ExecutorService pool = Executors.newFixedThreadPool(n);
+        CountDownLatch ready = new CountDownLatch(1);
+        List<Future<Boolean>> futures = new ArrayList<>();
+        for (DurableStore s : stores) {
+            futures.add(pool.submit(() -> {
+                ready.await();
+                return s.claim("x");
+            }));
+        }
+        ready.countDown();
+        for (Future<Boolean> f : futures) {
+            f.get(5, SECONDS);
+        }
+        pool.shutdown();
+
+        String finalOwner = Files.readString(storeDir.resolve("x.lease"));
+        assertThat(finalOwner).isIn(owners);
     }
 }

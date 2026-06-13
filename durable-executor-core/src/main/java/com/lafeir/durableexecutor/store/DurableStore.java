@@ -13,6 +13,8 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -107,13 +109,20 @@ public class DurableStore {
         }
     }
 
-    /** Releases the lease written by {@link #acquireLease}. No-op in SINGLE_INSTANCE mode. */
+    /**
+     * Releases the lease written by {@link #acquireLease}, but only if we still own it. If our lease
+     * expired and another instance reclaimed and re-stamped the record under its own owner, deleting
+     * here would expose that instance's still-running record to a third one — so we leave a lease we
+     * no longer own. No-op in SINGLE_INSTANCE mode.
+     */
     public void releaseLease(String executionId) {
         if (!isShared()) {
             return;
         }
         try {
-            Files.deleteIfExists(storeDir.resolve(executionId + LEASE_SUFFIX));
+            if (ownerId.equals(readLeaseOwner(executionId))) {
+                Files.deleteIfExists(storeDir.resolve(executionId + LEASE_SUFFIX));
+            }
         } catch (IOException e) {
             log.warn("Failed to release lease for {}; it will expire after the lease duration", executionId, e);
         }
@@ -144,8 +153,12 @@ public class DurableStore {
 
     private void writeLease(String executionId) {
         try {
-            Path tmp = storeDir.resolve(executionId + LEASE_SUFFIX + ".tmp");
             Path file = storeDir.resolve(executionId + LEASE_SUFFIX);
+            // A unique temp per write: two instances claiming the same record concurrently (or this
+            // instance's acquire racing its own heartbeat renewal) must not share a {id}.lease.tmp,
+            // or one writer's ATOMIC_MOVE consumes the file out from under the other — throwing
+            // NoSuchFileException and leaving the lease's owner indeterminate.
+            Path tmp = Files.createTempFile(storeDir, executionId + LEASE_SUFFIX, ".tmp");
             Files.write(tmp, ownerId.getBytes(StandardCharsets.UTF_8));
             Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             Files.setLastModifiedTime(file, FileTime.from(Instant.now()));
@@ -299,6 +312,8 @@ public class DurableStore {
         Instant stuckCutoff = Instant.now().minus(stuckGrace);
         Map<String, DurableExecution> pending = new LinkedHashMap<>();
         Map<String, DurableExecution> stuckDeleted = new LinkedHashMap<>();
+        Set<String> pendingIds = new HashSet<>();
+        List<String> leaseIds = new ArrayList<>();
         try (Stream<Path> files = Files.list(storeDir)) {
             files.forEach(file -> {
                 String name = file.getFileName().toString();
@@ -309,8 +324,11 @@ public class DurableStore {
                             DurableExecution execution = objectMapper.readValue(file.toFile(), DurableExecution.class);
                             stuckDeleted.put(execution.getExecutionId(), execution);
                         }
+                    } else if (name.endsWith(LEASE_SUFFIX)) {
+                        leaseIds.add(name.substring(0, name.length() - LEASE_SUFFIX.length()));
                     } else if (name.endsWith(PENDING_SUFFIX)) {
                         String id = name.substring(0, name.length() - PENDING_SUFFIX.length());
+                        pendingIds.add(id);
                         if (live.contains(id)) {
                             return; // running in this process right now — not a crash to recover
                         }
@@ -327,7 +345,34 @@ public class DurableStore {
         } catch (IOException e) {
             log.error("Failed to list durable store directory {}", storeDir, e);
         }
+        if (isShared()) {
+            sweepOrphanLeases(leaseIds, pendingIds);
+        }
         return new StoreScan(pending, stuckDeleted);
+    }
+
+    /**
+     * Removes {id}.lease files whose pending record is gone (dead-lettered, committed, or the owner
+     * crashed before releasing) and whose lease has expired. An expired+orphaned lease is inert, but
+     * leaving it litters the directory; requiring expiry also avoids racing the acquireLease→save
+     * window where a lease legitimately exists for a record that has not been written yet.
+     */
+    private void sweepOrphanLeases(List<String> leaseIds, Set<String> pendingIds) {
+        Instant now = Instant.now();
+        for (String id : leaseIds) {
+            if (pendingIds.contains(id)) {
+                continue;
+            }
+            Path lease = storeDir.resolve(id + LEASE_SUFFIX);
+            try {
+                if (Files.getLastModifiedTime(lease).toInstant().plus(leaseDuration).isAfter(now)) {
+                    continue; // still valid — the owner may be mid-write of the record
+                }
+                Files.deleteIfExists(lease);
+            } catch (IOException e) {
+                log.warn("Failed to sweep orphaned lease {} ({})", id, e.getMessage());
+            }
+        }
     }
 
     private Map<String, DurableExecution> load(String suffix) {

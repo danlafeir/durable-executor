@@ -255,6 +255,9 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         } catch (ClassNotFoundException | NoSuchMethodException | NoSuchBeanDefinitionException e) {
             // Only genuinely permanent resolution failures. Do NOT widen to BeansException — a
             // transient BeanCreationException must keep falling through to the retry path below.
+            // We claimed the lease above but will never invoke (no aspect to release it), so release
+            // it here before dead-lettering rather than leaving it for the orphan sweep.
+            pendingStore.releaseLease(execution.getExecutionId());
             throw new DurableTargetUnresolvableException(execution, e);
         }
         // Deserialize against the method's *generic* parameter types, not the erased classes, so
