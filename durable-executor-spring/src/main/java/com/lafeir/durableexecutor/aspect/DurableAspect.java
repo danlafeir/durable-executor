@@ -104,6 +104,23 @@ public class DurableAspect {
                 DurableContext.clear();
             }
 
+            // Self-fence before touching the record in any way. If we lost the lease while the method
+            // ran — this instance stalled long enough for another to reclaim the record and take it
+            // over — that other instance is now authoritative. Anything we do to the record from here
+            // (commit, delete, dead-letter, or re-persist a failed attempt) would corrupt its state:
+            // steal the commit rename out from under it, or push a record it is actively running into
+            // the DLQ. A fenced owner mutates the record in no way and bows out; releaseLease and
+            // markNotLive in the finally are owner-checked and safe. This must precede the markedFailed
+            // branch — on the recovery path that branch throws, which would otherwise route a fenced
+            // owner into handleFailedAttempt (save/delete) against a record it no longer owns. (Bounds
+            // at-most-once *ownership*; a side effect already performed in the method body cannot be
+            // undone here.)
+            if (store.isShared() && !store.stillOwn(executionId)) {
+                log.warn("Durable execution {} lost its lease while running (this instance likely stalled); "
+                        + "another instance is now authoritative — leaving the record untouched.", executionId);
+                return result;
+            }
+
             if (markedFailed) {
                 String reason = (failureReason != null && !failureReason.isEmpty()) ? failureReason : "(no reason given)";
                 if (isRecovery) {
@@ -113,20 +130,6 @@ public class DurableAspect {
                     throw new DurableContext.MarkedFailedException(reason);
                 }
                 log.warn("Durable execution {} signalled failed via DurableContext; record kept for recovery. Reason: {}", executionId, reason);
-                return result;
-            }
-
-            // Self-fence before closing. If we lost the lease while the method ran — this instance
-            // stalled long enough for another to reclaim the record and take it over — that other
-            // instance is now authoritative. Committing, deleting, or dead-lettering here would corrupt
-            // its state: steal the commit rename out from under it (killing its own crash-recovery), or
-            // push a record it is actively running into the DLQ. A fenced owner must mutate the record
-            // in no way and bow out; releaseLease and markNotLive in the finally are owner-checked and
-            // safe. (This bounds at-most-once *ownership* of the record; a non-idempotent side effect
-            // already performed inside the method body cannot be undone here.)
-            if (store.isShared() && !store.stillOwn(executionId)) {
-                log.warn("Durable execution {} lost its lease while running (this instance likely stalled); "
-                        + "another instance is now authoritative — leaving the record untouched.", executionId);
                 return result;
             }
 

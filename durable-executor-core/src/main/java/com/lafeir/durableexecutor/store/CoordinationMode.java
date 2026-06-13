@@ -22,6 +22,10 @@ public enum CoordinationMode {
      * filesystem has inherent TOCTOU windows and stale-read behaviour (notably on NFS), so a
      * narrow window of cross-instance double execution remains possible. For strict
      * exactly-once across instances, run {@link #SINGLE_INSTANCE} behind an external lock.
+     *
+     * <p>See {@code docs/coordination.md} for the design — the supported-storage contract, the
+     * self-fencing lease (owner-checked renewal, waited takeover, monotonic self-fence), and
+     * precisely what at-most-once does and does not cover.
      */
     SHARED_STORE
 }
