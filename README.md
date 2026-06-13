@@ -131,6 +131,8 @@ A pending `{id}.msgpack` file means one of two things — an execution that cras
 | `shared-store` | Multiple replicas sharing one store directory — a `ReadWriteMany` / NFS volume. | Each in-flight record is stamped with a `{id}.lease` file (owner + heartbeat-renewed expiry). Another instance skips a record whose lease is still valid and only reclaims it once the lease has been expired for the full takeover margin — `lease-duration + visibility-lag + clock-skew` after the owner last heartbeat — so a slow-to-propagate renewal from a still-live owner can't trigger a premature takeover. |
 
 > **`shared-store` is best-effort, not race-free.** File-based coordination over a shared filesystem has inherent check-then-act windows and stale-read behaviour (notably on NFS), so a narrow window of cross-instance double execution remains possible. For strict exactly-once *across instances*, run `single-instance` behind an external lock (a leader election, a database advisory lock, etc.) so only one replica is ever active against a given store.
+>
+> See [docs/coordination.md](docs/coordination.md) for the design — the supported-storage contract, the self-fencing lease, how `visibility-lag`/`clock-skew` set the takeover margin, and precisely what at-most-once does and does not cover.
 
 ### Plain Spring (no Boot)
 
