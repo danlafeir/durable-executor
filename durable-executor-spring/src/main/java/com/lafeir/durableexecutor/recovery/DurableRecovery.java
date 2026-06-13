@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationListener;
@@ -180,6 +181,12 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
             log.info("Retrying execution {} → {}.{}()",
                     execution.getExecutionId(), execution.getTargetClassName(), execution.getMethodName());
             recover(execution);
+        } catch (DurableTargetUnresolvableException e) {
+            // Permanent failure — retrying cannot resolve a method that no longer exists. Dead-letter
+            // immediately rather than burning the retry budget; the entry can be requeued after the
+            // signature is restored.
+            log.error("{} Dead-lettering {} without retry.", e.getMessage(), execution.getExecutionId());
+            sendToDeadLetter(execution);
         } catch (Exception e) {
             Throwable cause = e instanceof InvocationTargetException ite && ite.getCause() != null
                     ? ite.getCause() : e;
@@ -237,14 +244,23 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
             log.debug("Execution {} claimed by another instance; skipping recovery", execution.getExecutionId());
             return;
         }
-        Class<?> targetClass = Class.forName(execution.getTargetClassName());
-        Class<?>[] paramTypes = resolveParamTypes(execution.getParameterTypeNames());
-        Method method = targetClass.getMethod(execution.getMethodName(), paramTypes);
+        Class<?> targetClass;
+        Method method;
+        Object bean;
+        try {
+            targetClass = Class.forName(execution.getTargetClassName());
+            Class<?>[] paramTypes = resolveParamTypes(execution.getParameterTypeNames());
+            method = targetClass.getMethod(execution.getMethodName(), paramTypes);
+            bean = applicationContext.getBean(targetClass);
+        } catch (ClassNotFoundException | NoSuchMethodException | NoSuchBeanDefinitionException e) {
+            // Only genuinely permanent resolution failures. Do NOT widen to BeansException — a
+            // transient BeanCreationException must keep falling through to the retry path below.
+            throw new DurableTargetUnresolvableException(execution, e);
+        }
         // Deserialize against the method's *generic* parameter types, not the erased classes, so
         // List<Order> comes back as List<Order> rather than List<LinkedHashMap>. @JsonTypeInfo-
         // annotated parameter types also round-trip to their concrete subtype.
         Object[] args = deserializeArgs(execution.getSerializedArgs(), method.getGenericParameterTypes());
-        Object bean = applicationContext.getBean(targetClass);
         // setAccessible is required when the method's declaring class has non-public
         // visibility (e.g. a public method inside a package-private enclosing type).
         // On named-module deployments it may throw InaccessibleObjectException — we
@@ -280,6 +296,18 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
             args[i] = objectMapper.readValue(serialized[i], javaType);
         }
         return args;
+    }
+
+    /** A record's @Durable target class/method/bean no longer resolves — a permanent (non-retryable) failure. */
+    static class DurableTargetUnresolvableException extends RuntimeException {
+        DurableTargetUnresolvableException(DurableExecution execution, Throwable cause) {
+            super(String.format(
+                    "@Durable target %s.%s(%s) could not be resolved — it was likely renamed, removed, or "
+                    + "re-signatured by a deploy (record created %s). The record cannot be recovered; drain "
+                    + "in-flight @Durable executions before changing their signatures.",
+                    execution.getTargetClassName(), execution.getMethodName(),
+                    String.join(", ", execution.getParameterTypeNames()), execution.getCreatedAt()), cause);
+        }
     }
 
     @Override
