@@ -59,6 +59,13 @@ public class DurableStore {
      */
     private final Set<String> live = ConcurrentHashMap.newKeySet();
 
+    /**
+     * Monotonic timestamp (System.nanoTime) of the last successful lease write per execution, set on
+     * acquire, claim, and renewal. Read by {@link #stillOwn} to self-fence: an instance that stalled
+     * past the lease duration cannot prove it still holds the lease and must not commit its record.
+     */
+    private final Map<String, Long> lastRenewNanos = new ConcurrentHashMap<>();
+
     public DurableStore(Path storeDir, ObjectMapper objectMapper, Duration stuckGrace) {
         this(storeDir, objectMapper, stuckGrace, CoordinationMode.SINGLE_INSTANCE, "",
                 Duration.ZERO, Duration.ZERO, Duration.ZERO);
@@ -103,6 +110,7 @@ public class DurableStore {
     /** Clears the live mark once the execution has completed, succeeded or failed. */
     public void markNotLive(String executionId) {
         live.remove(executionId);
+        lastRenewNanos.remove(executionId);
     }
 
     /**
@@ -112,6 +120,7 @@ public class DurableStore {
     public void acquireLease(String executionId) {
         if (isShared()) {
             writeLease(executionId);
+            lastRenewNanos.put(executionId, System.nanoTime());
         }
     }
 
@@ -125,6 +134,7 @@ public class DurableStore {
         if (!isShared()) {
             return;
         }
+        lastRenewNanos.remove(executionId);
         try {
             if (ownerId.equals(readLeaseOwner(executionId))) {
                 Files.deleteIfExists(storeDir.resolve(executionId + LEASE_SUFFIX));
@@ -144,6 +154,39 @@ public class DurableStore {
             return true;
         }
         writeLease(executionId);
+        boolean won = ownerId.equals(readLeaseOwner(executionId));
+        if (won) {
+            lastRenewNanos.put(executionId, System.nanoTime());
+        } else {
+            lastRenewNanos.remove(executionId);
+        }
+        return won;
+    }
+
+    /**
+     * Whether this instance can still prove it owns the lease for an in-flight execution — the
+     * self-fence the aspect checks before committing a record. True only if the lease file still names
+     * us <em>and</em> less than the lease duration has elapsed, by this instance's own monotonic clock,
+     * since we last successfully renewed it.
+     *
+     * <p>The monotonic check is the load-bearing half: if this instance stalled (a long GC pause, the
+     * scheduler starving the heartbeat) past the lease duration, another instance may have taken the
+     * record over, and neither a wall-clock comparison nor a fresh read of the (possibly stale) lease
+     * file can be trusted to notice. Returning false there makes the owner abandon a record it can no
+     * longer prove is its own, rather than committing over a live takeover. Always true in
+     * SINGLE_INSTANCE mode.
+     */
+    public boolean stillOwn(String executionId) {
+        if (!isShared()) {
+            return true;
+        }
+        Long renewedAtNanos = lastRenewNanos.get(executionId);
+        if (renewedAtNanos == null) {
+            return false;
+        }
+        if (System.nanoTime() - renewedAtNanos > leaseDuration.toNanos()) {
+            return false;
+        }
         return ownerId.equals(readLeaseOwner(executionId));
     }
 
@@ -166,6 +209,7 @@ public class DurableStore {
     private void renewLeaseIfOwned(String executionId) {
         if (ownerId.equals(readLeaseOwner(executionId))) {
             writeLease(executionId);
+            lastRenewNanos.put(executionId, System.nanoTime());
         }
     }
 

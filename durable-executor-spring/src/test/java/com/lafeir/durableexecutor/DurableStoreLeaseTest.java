@@ -149,6 +149,35 @@ class DurableStoreLeaseTest {
     }
 
     @Test
+    void stillOwnIsTrueWhileWeHoldAFreshLease() {
+        DurableStore a = shared("owner-A", Duration.ofSeconds(30));
+        a.acquireLease("x");
+        assertThat(a.stillOwn("x")).isTrue();
+    }
+
+    @Test
+    void stillOwnIsFalseAfterAnotherInstanceTakesOverTheLease() {
+        DurableStore a = shared("owner-A", Duration.ofSeconds(30));
+        DurableStore b = shared("owner-B", Duration.ofSeconds(30));
+        a.acquireLease("x");
+        b.acquireLease("x"); // A stalled; B reclaimed and now owns the lease
+        assertThat(a.stillOwn("x"))
+                .as("the lease file no longer names us, so we cannot commit our record")
+                .isFalse();
+    }
+
+    @Test
+    void stillOwnIsFalseOncePastTheLeaseDurationEvenIfTheFileStillReadsAsOurs() {
+        DurableStore a = shared("owner-A", Duration.ofMillis(50));
+        a.acquireLease("x"); // nobody else ever touches this lease — the file keeps reading owner-A
+        await().atMost(2, SECONDS).untilAsserted(() ->
+                assertThat(a.stillOwn("x"))
+                        .as("past the lease duration since our last renew we cannot prove freshness and "
+                                + "must self-fence, even though the (possibly stale) file still names us")
+                        .isFalse());
+    }
+
+    @Test
     void renewalDoesNotStompALeaseAnotherInstanceTookOver() throws Exception {
         DurableStore a = shared("owner-A", Duration.ofSeconds(30));
         DurableStore b = shared("owner-B", Duration.ofSeconds(30));

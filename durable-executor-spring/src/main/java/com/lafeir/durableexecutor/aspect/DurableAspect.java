@@ -116,6 +116,20 @@ public class DurableAspect {
                 return result;
             }
 
+            // Self-fence before closing. If we lost the lease while the method ran — this instance
+            // stalled long enough for another to reclaim the record and take it over — that other
+            // instance is now authoritative. Committing, deleting, or dead-lettering here would corrupt
+            // its state: steal the commit rename out from under it (killing its own crash-recovery), or
+            // push a record it is actively running into the DLQ. A fenced owner must mutate the record
+            // in no way and bow out; releaseLease and markNotLive in the finally are owner-checked and
+            // safe. (This bounds at-most-once *ownership* of the record; a non-idempotent side effect
+            // already performed inside the method body cannot be undone here.)
+            if (store.isShared() && !store.stillOwn(executionId)) {
+                log.warn("Durable execution {} lost its lease while running (this instance likely stalled); "
+                        + "another instance is now authoritative — leaving the record untouched.", executionId);
+                return result;
+            }
+
             // Method succeeded — close the record. Close is best-effort cleanup: an I/O error
             // here must not fail the caller (the method already returned) and must not leave a
             // pending record that recovery would re-run.
