@@ -69,6 +69,8 @@ durable:
   stuck-grace-period: PT30S                  # age threshold for stuck-deleted files
   coordination: single-instance              # single-instance (default) | shared-store
   lease-duration: PT1M                       # shared-store only: lease TTL (default 1m)
+  visibility-lag: PT5S                       # shared-store only: bounded delay before one instance sees another's lease write — Δ (default 5s)
+  clock-skew: PT1S                           # shared-store only: assumed clock-skew bound between instances (default 1s)
   max-attempts: 5                            # recovery attempts before DLQ (default 5)
   retry-backoff: PT30S                       # base backoff delay (default 30s)
   retry-backoff-multiplier: 2.0              # backoff growth per attempt (default 2.0)
@@ -126,7 +128,7 @@ A pending `{id}.msgpack` file means one of two things — an execution that cras
 | Mode | Use when | How |
 |------|----------|-----|
 | `single-instance` (default) | One active writer per store directory — a `ReadWriteOnce` volume, a dedicated disk, or a single replica. | Liveness is tracked in memory. Deterministic, zero on-disk overhead. The recovery scan never re-runs an execution that is still in-flight in this process. |
-| `shared-store` | Multiple replicas sharing one store directory — a `ReadWriteMany` / NFS volume. | Each in-flight record is stamped with a `{id}.lease` file (owner + heartbeat-renewed expiry). Another instance skips a record whose lease is still valid and only reclaims it once the lease expires (`lease-duration` after the owner last heartbeat — i.e. after it crashed). |
+| `shared-store` | Multiple replicas sharing one store directory — a `ReadWriteMany` / NFS volume. | Each in-flight record is stamped with a `{id}.lease` file (owner + heartbeat-renewed expiry). Another instance skips a record whose lease is still valid and only reclaims it once the lease has been expired for the full takeover margin — `lease-duration + visibility-lag + clock-skew` after the owner last heartbeat — so a slow-to-propagate renewal from a still-live owner can't trigger a premature takeover. |
 
 > **`shared-store` is best-effort, not race-free.** File-based coordination over a shared filesystem has inherent check-then-act windows and stale-read behaviour (notably on NFS), so a narrow window of cross-instance double execution remains possible. For strict exactly-once *across instances*, run `single-instance` behind an external lock (a leader election, a database advisory lock, etc.) so only one replica is ever active against a given store.
 

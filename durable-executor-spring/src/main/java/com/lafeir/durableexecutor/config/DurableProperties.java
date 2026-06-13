@@ -86,6 +86,24 @@ public class DurableProperties {
      */
     private java.time.Duration leaseDuration = java.time.Duration.ofMinutes(1);
 
+    /**
+     * SHARED_STORE only: the storage's bounded visibility lag (Δ) — the worst-case delay before one
+     * instance observes a lease write made by another. A reclaiming instance waits {@code lease-duration
+     * + visibility-lag + clock-skew} past a lease's last heartbeat before taking it over, so a brief
+     * delay in seeing a still-live owner's renewal cannot trigger a premature takeover. On a
+     * strongly-consistent shared filesystem this is near zero; on NFS with attribute caching it must be
+     * raised to the cache bound (acregmax/acdirmax), which can be tens of seconds. Measure it for your
+     * storage — too low risks cross-instance double execution.
+     */
+    private java.time.Duration visibilityLag = java.time.Duration.ofSeconds(5);
+
+    /**
+     * SHARED_STORE only: the assumed upper bound on clock skew between instances. A lease's expiry is
+     * computed from the file mtime stamped by its (possibly differently-clocked) owner, so this margin
+     * is added to the takeover wait. Keep instances on NTP and this can stay small.
+     */
+    private java.time.Duration clockSkew = java.time.Duration.ofSeconds(1);
+
     public String getStorePath() { return storePath; }
     public void setStorePath(String storePath) { this.storePath = storePath; }
 
@@ -121,6 +139,12 @@ public class DurableProperties {
 
     public java.time.Duration getLeaseDuration() { return leaseDuration; }
     public void setLeaseDuration(java.time.Duration leaseDuration) { this.leaseDuration = leaseDuration; }
+
+    public java.time.Duration getVisibilityLag() { return visibilityLag; }
+    public void setVisibilityLag(java.time.Duration visibilityLag) { this.visibilityLag = visibilityLag; }
+
+    public java.time.Duration getClockSkew() { return clockSkew; }
+    public void setClockSkew(java.time.Duration clockSkew) { this.clockSkew = clockSkew; }
 
     private DlqEndpoint dlqEndpoint = new DlqEndpoint();
 

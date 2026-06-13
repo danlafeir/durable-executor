@@ -43,8 +43,12 @@ class DurableStoreLeaseTest {
     }
 
     private DurableStore shared(String owner, Duration lease) {
+        return shared(owner, lease, Duration.ZERO, Duration.ZERO);
+    }
+
+    private DurableStore shared(String owner, Duration lease, Duration visibilityLag, Duration clockSkew) {
         return new DurableStore(storeDir, objectMapper, Duration.ZERO,
-                CoordinationMode.SHARED_STORE, owner, lease);
+                CoordinationMode.SHARED_STORE, owner, lease, visibilityLag, clockSkew);
     }
 
     private DurableExecution execution(String id) {
@@ -76,6 +80,33 @@ class DurableStoreLeaseTest {
                 assertThat(a.scan().pending())
                         .as("once the lease expires the crashed record can be reclaimed")
                         .containsKey("x"));
+    }
+
+    @Test
+    void aReclaimWaitsTheFullVisibilityAndSkewMarginPastLeaseExpiry() throws Exception {
+        Duration lease = Duration.ofSeconds(10);
+        Duration delta = Duration.ofSeconds(30);
+        Duration skew = Duration.ofSeconds(5);
+        DurableStore a = shared("owner-A", lease, delta, skew);
+        DurableStore b = shared("owner-B", lease, delta, skew);
+
+        a.save(execution("x"));
+        b.acquireLease("x");
+
+        // Past the lease duration L, but still within the L + Δ + skew margin: the previous owner
+        // may simply be slow to be observed, so the record must NOT yet be reclaimable.
+        Files.setLastModifiedTime(storeDir.resolve("x.lease"),
+                FileTime.from(Instant.now().minus(lease).minusSeconds(1)));
+        assertThat(a.scan().pending())
+                .as("a lease past L but within the L + Δ + skew margin is not yet reclaimable")
+                .doesNotContainKey("x");
+
+        // Past the full margin: the previous owner has had time to renew or self-fence, so reclaim.
+        Files.setLastModifiedTime(storeDir.resolve("x.lease"),
+                FileTime.from(Instant.now().minus(lease).minus(delta).minus(skew).minusSeconds(1)));
+        assertThat(a.scan().pending())
+                .as("once the full L + Δ + skew margin has elapsed the crashed record can be reclaimed")
+                .containsKey("x");
     }
 
     @Test

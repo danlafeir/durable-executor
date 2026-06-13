@@ -55,7 +55,8 @@ public class DurableAutoConfiguration {
                                      @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper) {
         return new DurableStore(Path.of(properties.getStorePath()), durableObjectMapper,
                 properties.getStuckGracePeriod(), properties.getCoordination(),
-                UUID.randomUUID().toString(), properties.getLeaseDuration());
+                UUID.randomUUID().toString(), properties.getLeaseDuration(),
+                properties.getVisibilityLag(), properties.getClockSkew());
     }
 
     @Bean(name = "durableDeadLetterStore")

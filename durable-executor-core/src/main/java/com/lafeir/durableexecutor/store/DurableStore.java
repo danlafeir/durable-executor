@@ -48,6 +48,8 @@ public class DurableStore {
     private final CoordinationMode coordination;
     private final String ownerId;
     private final Duration leaseDuration;
+    private final Duration visibilityLag;
+    private final Duration clockSkew;
 
     /**
      * Execution IDs currently running in this process. A pending {id}.msgpack file means
@@ -58,17 +60,21 @@ public class DurableStore {
     private final Set<String> live = ConcurrentHashMap.newKeySet();
 
     public DurableStore(Path storeDir, ObjectMapper objectMapper, Duration stuckGrace) {
-        this(storeDir, objectMapper, stuckGrace, CoordinationMode.SINGLE_INSTANCE, "", Duration.ZERO);
+        this(storeDir, objectMapper, stuckGrace, CoordinationMode.SINGLE_INSTANCE, "",
+                Duration.ZERO, Duration.ZERO, Duration.ZERO);
     }
 
     public DurableStore(Path storeDir, ObjectMapper objectMapper, Duration stuckGrace,
-                        CoordinationMode coordination, String ownerId, Duration leaseDuration) {
+                        CoordinationMode coordination, String ownerId, Duration leaseDuration,
+                        Duration visibilityLag, Duration clockSkew) {
         this.storeDir = storeDir;
         this.objectMapper = objectMapper;
         this.stuckGrace = stuckGrace;
         this.coordination = coordination;
         this.ownerId = ownerId;
         this.leaseDuration = leaseDuration;
+        this.visibilityLag = visibilityLag;
+        this.clockSkew = clockSkew;
         try {
             Files.createDirectories(storeDir);
             // Fail fast on a read-only store: createDirectories is a no-op on an existing directory,
@@ -188,13 +194,25 @@ public class DurableStore {
         }
     }
 
+    /**
+     * How long after a lease's last heartbeat another instance must wait before reclaiming it.
+     * Beyond the lease duration L this adds the storage's bounded visibility lag (Δ) — the worst-case
+     * delay before one instance sees another's write on a shared filesystem — and a clock-skew margin,
+     * since L is measured against the file's mtime as stamped by the (possibly differently-clocked)
+     * owner. Waiting the full L + Δ + skew guarantees the previous owner has had time to either renew
+     * or self-fence before anyone takes over, closing the premature-reclaim race.
+     */
+    private Duration takeoverMargin() {
+        return leaseDuration.plus(visibilityLag).plus(clockSkew);
+    }
+
     private boolean isLeaseHeld(String executionId) {
         Path file = storeDir.resolve(executionId + LEASE_SUFFIX);
         try {
             if (!Files.exists(file)) {
                 return false;
             }
-            Instant expiry = Files.getLastModifiedTime(file).toInstant().plus(leaseDuration);
+            Instant expiry = Files.getLastModifiedTime(file).toInstant().plus(takeoverMargin());
             return expiry.isAfter(Instant.now());
         } catch (IOException e) {
             return false;
@@ -377,7 +395,7 @@ public class DurableStore {
             }
             Path lease = storeDir.resolve(id + LEASE_SUFFIX);
             try {
-                if (Files.getLastModifiedTime(lease).toInstant().plus(leaseDuration).isAfter(now)) {
+                if (Files.getLastModifiedTime(lease).toInstant().plus(takeoverMargin()).isAfter(now)) {
                     continue; // still valid — the owner may be mid-write of the record
                 }
                 Files.deleteIfExists(lease);
