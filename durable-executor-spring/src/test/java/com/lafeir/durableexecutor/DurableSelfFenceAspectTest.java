@@ -7,8 +7,9 @@ import com.lafeir.durableexecutor.DurableContext;
 import com.lafeir.durableexecutor.annotation.Durable;
 import com.lafeir.durableexecutor.aspect.AsyncReturnPolicy;
 import com.lafeir.durableexecutor.aspect.DurableAspect;
+import com.lafeir.durableexecutor.coordination.CoordinationStrategy;
+import com.lafeir.durableexecutor.coordination.FileLeaseCoordination;
 import com.lafeir.durableexecutor.model.DurableExecution;
-import com.lafeir.durableexecutor.store.CoordinationMode;
 import com.lafeir.durableexecutor.store.DurableStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -44,14 +45,17 @@ class DurableSelfFenceAspectTest {
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
-    private DurableStore shared(String owner) {
-        return new DurableStore(storeDir, objectMapper, Duration.ZERO,
-                CoordinationMode.SHARED_STORE, owner, Duration.ofSeconds(30),
-                Duration.ZERO, Duration.ZERO);
+    private DurableStore store() {
+        return new DurableStore(storeDir, objectMapper, Duration.ZERO);
     }
 
-    private Task proxy(DurableStore store, Runnable insideMethod) {
-        DurableAspect aspect = new DurableAspect(store, objectMapper, AsyncReturnPolicy.REJECT);
+    /** A multi-instance coordinator over the shared store dir, identified by owner — like a replica. */
+    private CoordinationStrategy coordination(String owner) {
+        return new FileLeaseCoordination(storeDir, owner, Duration.ofSeconds(30), Duration.ZERO, Duration.ZERO);
+    }
+
+    private Task proxy(DurableStore store, CoordinationStrategy coordination, Runnable insideMethod) {
+        DurableAspect aspect = new DurableAspect(store, coordination, objectMapper, AsyncReturnPolicy.REJECT);
         AspectJProxyFactory factory = new AspectJProxyFactory(new Task(insideMethod));
         factory.addAspect(aspect);
         return factory.getProxy();
@@ -63,10 +67,11 @@ class DurableSelfFenceAspectTest {
 
     @Test
     void aFencedOwnerLeavesItsRecordUntouchedAtClose() {
-        DurableStore store = shared("owner-A");
-        DurableStore intruder = shared("intruder");
-        // Mid-method, another instance reclaims the record and stamps the lease with its own owner.
-        Task proxy = proxy(store, () -> intruder.acquireLease("fenced-x"));
+        DurableStore store = store();
+        CoordinationStrategy ours = coordination("owner-A");
+        CoordinationStrategy intruder = coordination("intruder");
+        // Mid-method, another instance reclaims the record and stamps ownership with its own id.
+        Task proxy = proxy(store, ours, () -> intruder.acquire("fenced-x"));
 
         proxy.process();
 
@@ -77,8 +82,8 @@ class DurableSelfFenceAspectTest {
 
     @Test
     void anOwnerThatKeptItsLeaseClosesTheRecordNormally() {
-        DurableStore store = shared("owner-A");
-        Task proxy = proxy(store, () -> { }); // no takeover — the lease is still ours at close
+        DurableStore store = store();
+        Task proxy = proxy(store, coordination("owner-A"), () -> { }); // no takeover — still ours at close
 
         proxy.process();
 
@@ -89,14 +94,15 @@ class DurableSelfFenceAspectTest {
 
     @Test
     void aFencedRecoveryThatMarksFailedTouchesNothingAndDoesNotThrow() {
-        DurableStore store = shared("owner-A");
-        DurableStore intruder = shared("intruder");
+        DurableStore store = store();
+        CoordinationStrategy ours = coordination("owner-A");
+        CoordinationStrategy intruder = coordination("intruder");
 
         store.save(execution("fenced-x")); // a record being recovered
-        store.acquireLease("fenced-x");     // we hold the lease — sets our monotonic baseline
+        ours.acquire("fenced-x");           // we hold ownership (as claimForRecovery would) — monotonic baseline
 
-        Task proxy = proxy(store, () -> {
-            intruder.acquireLease("fenced-x"); // another instance takes the record over mid-recovery
+        Task proxy = proxy(store, ours, () -> {
+            intruder.acquire("fenced-x");      // another instance takes the record over mid-recovery
             DurableContext.markFailed("boom"); // and our recovery attempt signals failure
         });
 

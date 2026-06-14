@@ -3,6 +3,7 @@ package com.lafeir.durableexecutor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lafeir.durableexecutor.annotation.Durable;
 import com.lafeir.durableexecutor.config.DurableAutoConfiguration;
+import com.lafeir.durableexecutor.coordination.CoordinationStrategy;
 import com.lafeir.durableexecutor.model.DurableExecution;
 import com.lafeir.durableexecutor.store.DurableStore;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,6 +43,9 @@ class DurableExecutionTest {
 
     @Autowired
     private DurableStore durableStore;
+
+    @Autowired
+    private CoordinationStrategy coordination;
 
     @Autowired
     @Qualifier("durableDeadLetterStore")
@@ -112,16 +116,19 @@ class DurableExecutionTest {
 
     @Test
     void liveExecutionIsNotOfferedForRecoveryWhileRunning() {
-        // A scan that lands while a @Durable method is still running must not return that
-        // execution as a recovery candidate — otherwise the periodic recovery re-invokes a
-        // method that is currently executing (concurrent double execution).
-        Set<String> pendingSeenDuringExecution = new HashSet<>();
+        // A scan that lands while a @Durable method is still running must not treat that execution as a
+        // recovery candidate — otherwise the periodic recovery re-invokes a method that is currently
+        // executing (concurrent double execution). The scan returns all pending records; recovery filters
+        // out those the coordination strategy reports as active, which is what this asserts.
+        Set<String> recoveryCandidatesDuringExecution = new HashSet<>();
         OrderService.duringExecution = () ->
-                pendingSeenDuringExecution.addAll(durableStore.scan().pending().keySet());
+                durableStore.scan().pending().keySet().stream()
+                        .filter(id -> !coordination.isActive(id))
+                        .forEach(recoveryCandidatesDuringExecution::add);
 
         orderService.liveProbe();
 
-        assertThat(pendingSeenDuringExecution)
+        assertThat(recoveryCandidatesDuringExecution)
                 .as("a still-running execution must not be a recovery candidate")
                 .doesNotContain("live-probe-id");
         assertThat(durableStore.loadAll()).isEmpty();

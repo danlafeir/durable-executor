@@ -154,6 +154,47 @@ class CoordinationStrategyTest {
     }
 
     @Test
+    void fileLeaseReleaseLeavesALeaseAnotherInstanceReclaimedInPlace() throws Exception {
+        FileLeaseCoordination a = file("A", Duration.ofSeconds(30), Duration.ZERO, Duration.ZERO);
+        FileLeaseCoordination b = file("B", Duration.ofSeconds(30), Duration.ZERO, Duration.ZERO);
+        a.acquire("x");
+        b.acquire("x");   // A's lease expired and B reclaimed it (now owned by B, still running)
+        a.release("x");   // A finishing late must not delete B's live lease
+
+        assertThat(Files.readString(storeDir.resolve("x.lease")))
+                .as("release is owner-checked — it must not remove a lease another instance now owns")
+                .isEqualTo("B");
+    }
+
+    @Test
+    void fileLeaseConcurrentClaimsLeaveAWellFormedLeaseOwnedByOneClaimant() throws Exception {
+        // File claims are best-effort (two simultaneous claims can both return true), so this pins
+        // lease *integrity* under contention, not mutual exclusion: the unique-temp write must leave the
+        // lease owned by exactly one claimant — never empty, truncated, or lost to a temp-file collision.
+        int n = 8;
+        List<String> owners = IntStream.range(0, n).mapToObj(i -> "owner-" + i).toList();
+        List<FileLeaseCoordination> instances = owners.stream()
+                .map(o -> file(o, Duration.ofSeconds(30), Duration.ZERO, Duration.ZERO)).toList();
+
+        ExecutorService pool = Executors.newFixedThreadPool(n);
+        CountDownLatch ready = new CountDownLatch(1);
+        List<Future<Boolean>> futures = new ArrayList<>();
+        for (FileLeaseCoordination s : instances) {
+            futures.add(pool.submit(() -> {
+                ready.await();
+                return s.claimForRecovery("x");
+            }));
+        }
+        ready.countDown();
+        for (Future<Boolean> f : futures) {
+            f.get(5, SECONDS);
+        }
+        pool.shutdown();
+
+        assertThat(Files.readString(storeDir.resolve("x.lease"))).isIn(owners);
+    }
+
+    @Test
     void fileLeaseSweepRemovesExpiredOrphansButKeepsLeasesBackingALiveRecord() throws Exception {
         FileLeaseCoordination a = file("A", Duration.ofSeconds(30), Duration.ZERO, Duration.ZERO);
         a.acquire("orphan");

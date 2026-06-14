@@ -2,6 +2,7 @@ package com.lafeir.durableexecutor.recovery;
 
 import com.lafeir.durableexecutor.annotation.Durable;
 import com.lafeir.durableexecutor.aspect.DurableAspect;
+import com.lafeir.durableexecutor.coordination.CoordinationStrategy;
 import com.lafeir.durableexecutor.model.DurableExecution;
 import com.lafeir.durableexecutor.store.DurableStore;
 import com.fasterxml.jackson.databind.JavaType;
@@ -21,6 +22,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -56,6 +58,7 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
 
     private final DurableStore pendingStore;
     private final DurableStore deadLetterStore;
+    private final CoordinationStrategy coordination;
     private final ObjectMapper objectMapper;
     private final ApplicationContext applicationContext;
     private final ScheduledExecutorService scheduler;
@@ -65,14 +68,15 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
     private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
 
     /**
-     * Dedicated heartbeat thread, created only in SHARED_STORE mode. Kept off {@code scheduler}
-     * so a slow {@code runRecovery} (full directory scan + inline DLQ writes, e.g. on NFS) can't
-     * stall lease renewal long enough for this instance's live leases to lapse and be reclaimed.
+     * Dedicated heartbeat thread, created only for multi-instance coordination. Kept off
+     * {@code scheduler} so a slow {@code runRecovery} (full directory scan + inline DLQ writes, e.g. on
+     * NFS) can't stall ownership renewal long enough for this instance's leases to lapse and be reclaimed.
      */
     private ScheduledExecutorService heartbeatScheduler;
 
     public DurableRecovery(DurableStore pendingStore,
                            DurableStore deadLetterStore,
+                           CoordinationStrategy coordination,
                            ObjectMapper objectMapper,
                            ApplicationContext applicationContext,
                            ScheduledExecutorService scheduler,
@@ -81,6 +85,7 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
                            Duration dlqRetention) {
         this.pendingStore = pendingStore;
         this.deadLetterStore = deadLetterStore;
+        this.coordination = coordination;
         this.objectMapper = objectMapper;
         this.applicationContext = applicationContext;
         this.scheduler = scheduler;
@@ -95,19 +100,19 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         scheduler.scheduleAtFixedRate(
                 () -> runRecovery("scheduled"),
                 RETRY_INTERVAL_MINUTES, RETRY_INTERVAL_MINUTES, TimeUnit.MINUTES);
-        if (pendingStore.isShared()) {
-            long heartbeatMillis = Math.max(1, pendingStore.getLeaseDuration().toMillis() / 3);
+        if (coordination.isMultiInstance()) {
+            long heartbeatMillis = Math.max(1, coordination.heartbeatInterval().toMillis());
             heartbeatScheduler = Executors.newSingleThreadScheduledExecutor();
             heartbeatScheduler.scheduleAtFixedRate(
-                    this::renewLeases, heartbeatMillis, heartbeatMillis, TimeUnit.MILLISECONDS);
+                    this::heartbeat, heartbeatMillis, heartbeatMillis, TimeUnit.MILLISECONDS);
         }
     }
 
-    private void renewLeases() {
+    private void heartbeat() {
         try {
-            pendingStore.renewLeases();
+            coordination.heartbeat();
         } catch (Exception e) {
-            log.warn("Lease renewal cycle failed", e);
+            log.warn("Coordination heartbeat cycle failed", e);
         }
     }
 
@@ -115,9 +120,16 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         DurableStore.StoreScan scan = pendingStore.scan();
         drainStuckDeleted(scan.stuckDeleted());
         purgeExpiredDeadLetters();
-        if (!scan.pending().isEmpty()) {
-            log.info("[{}] Submitting {} pending execution(s) for retry", trigger, scan.pending().size());
-            scan.pending().values().forEach(this::scheduleRetry);
+        // Remove coordination state for records that no longer exist (e.g. orphaned leases).
+        coordination.sweep(scan.pending().keySet());
+        // isActive is a best-effort pre-filter (skip records running here or held by a live owner
+        // elsewhere); claimForRecovery in recover() is the authoritative race-winner.
+        List<DurableExecution> recoverable = scan.pending().values().stream()
+                .filter(e -> !coordination.isActive(e.getExecutionId()))
+                .toList();
+        if (!recoverable.isEmpty()) {
+            log.info("[{}] Submitting {} pending execution(s) for retry", trigger, recoverable.size());
+            recoverable.forEach(this::scheduleRetry);
         }
     }
 
@@ -244,9 +256,9 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
     }
 
     private void recover(DurableExecution execution) throws Exception {
-        // In SHARED_STORE mode, claim the record before re-invoking. If a concurrent instance
-        // won the claim, skip quietly (no exception → not dead-lettered); the owner will run it.
-        if (!pendingStore.claim(execution.getExecutionId())) {
+        // Claim ownership before re-invoking. If a concurrent instance won the claim, skip quietly
+        // (no exception → not dead-lettered); the owner will run it. Always true in single-instance.
+        if (!coordination.claimForRecovery(execution.getExecutionId())) {
             log.debug("Execution {} claimed by another instance; skipping recovery", execution.getExecutionId());
             return;
         }
@@ -261,22 +273,22 @@ public class DurableRecovery implements ApplicationListener<ApplicationReadyEven
         } catch (ClassNotFoundException | NoSuchMethodException | NoSuchBeanDefinitionException e) {
             // Only genuinely permanent resolution failures. Do NOT widen to BeansException — a
             // transient BeanCreationException must keep falling through to the retry path below.
-            // We claimed the lease above but will never invoke (no aspect to release it), so release
-            // it here before dead-lettering rather than leaving it for the orphan sweep.
-            pendingStore.releaseLease(execution.getExecutionId());
+            // We claimed ownership above but will never invoke (no aspect to release it), so release
+            // it here before dead-lettering rather than leaving it for the sweep.
+            coordination.release(execution.getExecutionId());
             throw new DurableTargetUnresolvableException(execution, e);
         }
-        // Shared-store: reclaiming a record means its lease expired, which on a shared filesystem is
-        // ambiguous — the previous owner may have crashed mid-execution (safe to re-run) or merely
-        // stalled and still be running it (re-running would double-execute). For a non-idempotent
-        // (TRANSACTIONAL) method the two cannot be told apart, so we do not re-invoke; the record is
-        // routed to the DLQ for operator adjudication, who can check whether the side effect landed.
-        // IDEMPOTENT methods are safe to repeat and are re-invoked. Single-instance recovery is exempt:
-        // a restart there unambiguously means the previous run ended, so TRANSACTIONAL records re-run.
-        if (pendingStore.isShared() && resolveCloseMode(method) == Durable.CloseMode.TRANSACTIONAL) {
-            // We claimed the lease above but will not invoke; release it before dead-lettering rather
-            // than leaving it for the orphan sweep (mirrors the unresolvable-target path).
-            pendingStore.releaseLease(execution.getExecutionId());
+        // Multi-instance: reclaiming a record means its lease expired, which is ambiguous — the previous
+        // owner may have crashed mid-execution (safe to re-run) or merely stalled and still be running it
+        // (re-running would double-execute). For a non-idempotent (TRANSACTIONAL) method the two cannot be
+        // told apart, so we do not re-invoke; the record is routed to the DLQ for operator adjudication,
+        // who can check whether the side effect landed. IDEMPOTENT methods are safe to repeat and are
+        // re-invoked. Single-instance recovery is exempt: a restart there unambiguously means the previous
+        // run ended, so TRANSACTIONAL records re-run.
+        if (coordination.isMultiInstance() && resolveCloseMode(method) == Durable.CloseMode.TRANSACTIONAL) {
+            // We claimed ownership above but will not invoke; release it before dead-lettering rather
+            // than leaving it for the sweep (mirrors the unresolvable-target path).
+            coordination.release(execution.getExecutionId());
             throw new AmbiguousTakeoverException(execution);
         }
         // Deserialize against the method's *generic* parameter types, not the erased classes, so

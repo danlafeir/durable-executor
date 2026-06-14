@@ -3,6 +3,9 @@ package com.lafeir.durableexecutor.config;
 import com.lafeir.durableexecutor.aspect.AsyncReturnPolicy;
 import com.lafeir.durableexecutor.aspect.DurableAspect;
 import com.lafeir.durableexecutor.aspect.DurableAsyncReturnValidator;
+import com.lafeir.durableexecutor.coordination.CoordinationStrategy;
+import com.lafeir.durableexecutor.coordination.FileLeaseCoordination;
+import com.lafeir.durableexecutor.coordination.SingleInstanceCoordination;
 import com.lafeir.durableexecutor.recovery.DurableRecovery;
 import com.lafeir.durableexecutor.recovery.RetryPolicy;
 import com.lafeir.durableexecutor.store.DurableStore;
@@ -54,9 +57,23 @@ public class DurableAutoConfiguration {
     public DurableStore durableStore(DurableProperties properties,
                                      @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper) {
         return new DurableStore(Path.of(properties.getStorePath()), durableObjectMapper,
-                properties.getStuckGracePeriod(), properties.getCoordination(),
-                UUID.randomUUID().toString(), properties.getLeaseDuration(),
-                properties.getVisibilityLag(), properties.getClockSkew());
+                properties.getStuckGracePeriod());
+    }
+
+    /**
+     * Selects how in-flight records are coordinated. Define your own {@code CoordinationStrategy} bean
+     * (e.g. a database lock or Redis back end) to override this entirely — see
+     * {@code docs/coordination-strategy.md}.
+     */
+    @Bean
+    @ConditionalOnMissingBean(CoordinationStrategy.class)
+    public CoordinationStrategy durableCoordinationStrategy(DurableProperties properties) {
+        return switch (properties.getCoordination()) {
+            case SINGLE_INSTANCE -> new SingleInstanceCoordination();
+            case SHARED_STORE -> new FileLeaseCoordination(Path.of(properties.getStorePath()),
+                    UUID.randomUUID().toString(), properties.getLeaseDuration(),
+                    properties.getVisibilityLag(), properties.getClockSkew());
+        };
     }
 
     @Bean(name = "durableDeadLetterStore")
@@ -69,9 +86,11 @@ public class DurableAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public DurableAspect durableAspect(@Qualifier("durableStore") DurableStore durableStore,
+                                       CoordinationStrategy coordinationStrategy,
                                        @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper,
                                        DurableProperties properties) {
-        return new DurableAspect(durableStore, durableObjectMapper, properties.getAsyncReturnPolicy());
+        return new DurableAspect(durableStore, coordinationStrategy, durableObjectMapper,
+                properties.getAsyncReturnPolicy());
     }
 
     /**
@@ -119,6 +138,7 @@ public class DurableAutoConfiguration {
     @ConditionalOnMissingBean
     public DurableRecovery durableRecovery(@Qualifier("durableStore") DurableStore durableStore,
                                            @Qualifier("durableDeadLetterStore") DurableStore durableDeadLetterStore,
+                                           CoordinationStrategy coordinationStrategy,
                                            @Qualifier("durableObjectMapper") ObjectMapper durableObjectMapper,
                                            ApplicationContext applicationContext,
                                            @Qualifier("durableScheduler") ScheduledExecutorService durableScheduler,
@@ -126,7 +146,7 @@ public class DurableAutoConfiguration {
                                            DurableProperties properties) {
         RetryPolicy retryPolicy = new RetryPolicy(properties.getMaxAttempts(), properties.getRetryBackoff(),
                 properties.getRetryBackoffMultiplier(), properties.getRetryBackoffMax());
-        return new DurableRecovery(durableStore, durableDeadLetterStore, durableObjectMapper,
+        return new DurableRecovery(durableStore, durableDeadLetterStore, coordinationStrategy, durableObjectMapper,
                 applicationContext, durableScheduler, durableRetryExecutor, retryPolicy,
                 properties.getDlqRetention());
     }

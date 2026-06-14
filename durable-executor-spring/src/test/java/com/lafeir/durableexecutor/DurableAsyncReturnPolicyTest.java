@@ -6,6 +6,7 @@ import com.lafeir.durableexecutor.aspect.AsyncReturnPolicy;
 import com.lafeir.durableexecutor.aspect.DurableAspect;
 import com.lafeir.durableexecutor.aspect.DurableAsyncReturnValidator;
 import com.lafeir.durableexecutor.config.DurableAutoConfiguration;
+import com.lafeir.durableexecutor.coordination.SingleInstanceCoordination;
 import com.lafeir.durableexecutor.store.DurableStore;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.reflect.MethodSignature;
@@ -100,7 +101,7 @@ class DurableAsyncReturnPolicyTest {
         when(signature.getReturnType()).thenReturn(CompletableFuture.class);
         when(signature.toShortString()).thenReturn("AsyncBean.doAsync()");
 
-        DurableAspect aspect = new DurableAspect(store, mock(ObjectMapper.class), AsyncReturnPolicy.REJECT);
+        DurableAspect aspect = new DurableAspect(store, new SingleInstanceCoordination(), mock(ObjectMapper.class), AsyncReturnPolicy.REJECT);
 
         assertThatThrownBy(() -> aspect.around(joinPoint, mock(Durable.class)))
                 .isInstanceOf(IllegalStateException.class)

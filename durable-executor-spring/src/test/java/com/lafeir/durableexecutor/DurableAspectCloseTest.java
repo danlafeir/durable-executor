@@ -5,6 +5,7 @@ import com.lafeir.durableexecutor.DurableContext;
 import com.lafeir.durableexecutor.annotation.Durable;
 import com.lafeir.durableexecutor.aspect.AsyncReturnPolicy;
 import com.lafeir.durableexecutor.aspect.DurableAspect;
+import com.lafeir.durableexecutor.coordination.SingleInstanceCoordination;
 import com.lafeir.durableexecutor.store.DurableStore;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.reflect.MethodSignature;
@@ -37,7 +38,7 @@ class DurableAspectCloseTest {
 
     @BeforeEach
     void setup() throws Throwable {
-        aspect = new DurableAspect(store, objectMapper, AsyncReturnPolicy.REJECT);
+        aspect = new DurableAspect(store, new SingleInstanceCoordination(), objectMapper, AsyncReturnPolicy.REJECT);
 
         when(joinPoint.getSignature()).thenReturn(signature);
         when(signature.getMethod()).thenReturn(DurableAspectCloseTest.class.getDeclaredMethod("target"));

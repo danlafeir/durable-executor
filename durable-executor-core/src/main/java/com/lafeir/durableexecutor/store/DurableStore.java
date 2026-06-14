@@ -6,33 +6,28 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
- * File-per-execution store for in-flight durable executions.
+ * File-per-execution store for in-flight durable executions — pure record I/O. Whether a pending record
+ * is being run right now or is abandoned (and who may run it) is decided by a
+ * {@link com.lafeir.durableexecutor.coordination.CoordinationStrategy}, not here.
  *
  * Lifecycle:
  *   open:   {id}.msgpack         — method is in-flight
  *   commit: {id}-deleted.msgpack — method completed; rename is atomic and crash-safe
  *   cleanup: file deleted         — housekeeping after commit
  *
- * On recovery, any {id}-deleted.msgpack file that is older than the configured
- * stuckGrace period is considered stuck (JVM crashed between commit and cleanup)
- * and is routed to the dead letter queue rather than retried.
+ * On recovery, any {id}-deleted.msgpack file older than the configured stuckGrace period is considered
+ * stuck (JVM crashed between commit and cleanup) and is routed to the dead letter queue rather than retried.
  */
 public class DurableStore {
 
@@ -40,48 +35,15 @@ public class DurableStore {
 
     static final String PENDING_SUFFIX = ".msgpack";
     static final String DELETED_SUFFIX = "-deleted.msgpack";
-    static final String LEASE_SUFFIX = ".lease";
 
     private final Path storeDir;
     private final ObjectMapper objectMapper;
     private final Duration stuckGrace;
-    private final CoordinationMode coordination;
-    private final String ownerId;
-    private final Duration leaseDuration;
-    private final Duration visibilityLag;
-    private final Duration clockSkew;
-
-    /**
-     * Execution IDs currently running in this process. A pending {id}.msgpack file means
-     * one of two things — a crashed execution that needs recovery, or one running right now —
-     * and the file alone can't tell them apart. The interceptor registers an ID here for the
-     * duration of a live call so scan() can exclude it from recovery candidates.
-     */
-    private final Set<String> live = ConcurrentHashMap.newKeySet();
-
-    /**
-     * Monotonic timestamp (System.nanoTime) of the last successful lease write per execution, set on
-     * acquire, claim, and renewal. Read by {@link #stillOwn} to self-fence: an instance that stalled
-     * past the lease duration cannot prove it still holds the lease and must not commit its record.
-     */
-    private final Map<String, Long> lastRenewNanos = new ConcurrentHashMap<>();
 
     public DurableStore(Path storeDir, ObjectMapper objectMapper, Duration stuckGrace) {
-        this(storeDir, objectMapper, stuckGrace, CoordinationMode.SINGLE_INSTANCE, "",
-                Duration.ZERO, Duration.ZERO, Duration.ZERO);
-    }
-
-    public DurableStore(Path storeDir, ObjectMapper objectMapper, Duration stuckGrace,
-                        CoordinationMode coordination, String ownerId, Duration leaseDuration,
-                        Duration visibilityLag, Duration clockSkew) {
         this.storeDir = storeDir;
         this.objectMapper = objectMapper;
         this.stuckGrace = stuckGrace;
-        this.coordination = coordination;
-        this.ownerId = ownerId;
-        this.leaseDuration = leaseDuration;
-        this.visibilityLag = visibilityLag;
-        this.clockSkew = clockSkew;
         try {
             Files.createDirectories(storeDir);
             // Fail fast on a read-only store: createDirectories is a no-op on an existing directory,
@@ -91,175 +53,6 @@ public class DurableStore {
         } catch (IOException e) {
             throw new DurableStoreException(
                     "Durable store directory " + storeDir + " is not writable; durable records cannot be persisted", e);
-        }
-    }
-
-    public boolean isShared() {
-        return coordination == CoordinationMode.SHARED_STORE;
-    }
-
-    public Duration getLeaseDuration() {
-        return leaseDuration;
-    }
-
-    /** Marks an execution as actively running in this process so scan() will not offer it for recovery. */
-    public void markLive(String executionId) {
-        live.add(executionId);
-    }
-
-    /** Clears the live mark once the execution has completed, succeeded or failed. */
-    public void markNotLive(String executionId) {
-        live.remove(executionId);
-        lastRenewNanos.remove(executionId);
-    }
-
-    /**
-     * In SHARED_STORE mode, stamps {id}.lease with this instance's owner id so other instances
-     * sharing the store skip the record while it is live here. No-op in SINGLE_INSTANCE mode.
-     */
-    public void acquireLease(String executionId) {
-        if (isShared()) {
-            writeLease(executionId);
-            lastRenewNanos.put(executionId, System.nanoTime());
-        }
-    }
-
-    /**
-     * Releases the lease written by {@link #acquireLease}, but only if we still own it. If our lease
-     * expired and another instance reclaimed and re-stamped the record under its own owner, deleting
-     * here would expose that instance's still-running record to a third one — so we leave a lease we
-     * no longer own. No-op in SINGLE_INSTANCE mode.
-     */
-    public void releaseLease(String executionId) {
-        if (!isShared()) {
-            return;
-        }
-        lastRenewNanos.remove(executionId);
-        try {
-            if (ownerId.equals(readLeaseOwner(executionId))) {
-                Files.deleteIfExists(storeDir.resolve(executionId + LEASE_SUFFIX));
-            }
-        } catch (IOException e) {
-            log.warn("Failed to release lease for {}; it will expire after the lease duration", executionId, e);
-        }
-    }
-
-    /**
-     * Claims a record for recovery by this instance. Writes the lease and re-reads it: if a
-     * concurrent instance won the race the read-back owner differs and this returns false, so
-     * the caller skips the record. Always true in SINGLE_INSTANCE mode.
-     */
-    public boolean claim(String executionId) {
-        if (!isShared()) {
-            return true;
-        }
-        writeLease(executionId);
-        boolean won = ownerId.equals(readLeaseOwner(executionId));
-        if (won) {
-            lastRenewNanos.put(executionId, System.nanoTime());
-        } else {
-            lastRenewNanos.remove(executionId);
-        }
-        return won;
-    }
-
-    /**
-     * Whether this instance can still prove it owns the lease for an in-flight execution — the
-     * self-fence the aspect checks before committing a record. True only if the lease file still names
-     * us <em>and</em> less than the lease duration has elapsed, by this instance's own monotonic clock,
-     * since we last successfully renewed it.
-     *
-     * <p>The monotonic check is the load-bearing half: if this instance stalled (a long GC pause, the
-     * scheduler starving the heartbeat) past the lease duration, another instance may have taken the
-     * record over, and neither a wall-clock comparison nor a fresh read of the (possibly stale) lease
-     * file can be trusted to notice. Returning false there makes the owner abandon a record it can no
-     * longer prove is its own, rather than committing over a live takeover. Always true in
-     * SINGLE_INSTANCE mode.
-     */
-    public boolean stillOwn(String executionId) {
-        if (!isShared()) {
-            return true;
-        }
-        Long renewedAtNanos = lastRenewNanos.get(executionId);
-        if (renewedAtNanos == null) {
-            return false;
-        }
-        if (System.nanoTime() - renewedAtNanos > leaseDuration.toNanos()) {
-            return false;
-        }
-        return ownerId.equals(readLeaseOwner(executionId));
-    }
-
-    /** Renews the lease for every execution currently live in this process. No-op in SINGLE_INSTANCE mode. */
-    public void renewLeases() {
-        if (!isShared()) {
-            return;
-        }
-        for (String id : live) {
-            renewLeaseIfOwned(id);
-        }
-    }
-
-    /**
-     * Renews a lease only if we still own it. If this instance stalled long enough for another to
-     * reclaim the lease, blindly re-stamping it with our owner id would steal it back and put both
-     * instances on the record — the exact double-ownership the lease exists to prevent. A lease that
-     * has been taken over is left to its new owner.
-     */
-    private void renewLeaseIfOwned(String executionId) {
-        if (ownerId.equals(readLeaseOwner(executionId))) {
-            writeLease(executionId);
-            lastRenewNanos.put(executionId, System.nanoTime());
-        }
-    }
-
-    private void writeLease(String executionId) {
-        try {
-            Path file = storeDir.resolve(executionId + LEASE_SUFFIX);
-            // A unique temp per write: two instances claiming the same record concurrently (or this
-            // instance's acquire racing its own heartbeat renewal) must not share a {id}.lease.tmp,
-            // or one writer's ATOMIC_MOVE consumes the file out from under the other — throwing
-            // NoSuchFileException and leaving the lease's owner indeterminate.
-            Path tmp = Files.createTempFile(storeDir, executionId + LEASE_SUFFIX, ".tmp");
-            Files.write(tmp, ownerId.getBytes(StandardCharsets.UTF_8));
-            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            Files.setLastModifiedTime(file, FileTime.from(Instant.now()));
-        } catch (IOException e) {
-            log.warn("Failed to write lease for {}", executionId, e);
-        }
-    }
-
-    private String readLeaseOwner(String executionId) {
-        Path file = storeDir.resolve(executionId + LEASE_SUFFIX);
-        try {
-            return Files.exists(file) ? new String(Files.readAllBytes(file), StandardCharsets.UTF_8) : null;
-        } catch (IOException e) {
-            return null;
-        }
-    }
-
-    /**
-     * How long after a lease's last heartbeat another instance must wait before reclaiming it.
-     * Beyond the lease duration L this adds the storage's bounded visibility lag (Δ) — the worst-case
-     * delay before one instance sees another's write on a shared filesystem — and a clock-skew margin,
-     * since L is measured against the file's mtime as stamped by the (possibly differently-clocked)
-     * owner. Waiting the full L + Δ + skew guarantees the previous owner has had time to either renew
-     * or self-fence before anyone takes over, closing the premature-reclaim race.
-     */
-    private Duration takeoverMargin() {
-        return leaseDuration.plus(visibilityLag).plus(clockSkew);
-    }
-
-    private boolean isLeaseHeld(String executionId) {
-        Path file = storeDir.resolve(executionId + LEASE_SUFFIX);
-        try {
-            if (!Files.exists(file)) {
-                return false;
-            }
-            Instant expiry = Files.getLastModifiedTime(file).toInstant().plus(takeoverMargin());
-            return expiry.isAfter(Instant.now());
-        } catch (IOException e) {
-            return false;
         }
     }
 
@@ -374,10 +167,9 @@ public class DurableStore {
     }
 
     /**
-     * Single-pass directory scan. Returns pending executions and stuck-deleted executions
-     * (those whose -deleted.msgpack file is older than the configured stuckGrace period).
-     * Using this instead of separate loadAll() + loadAllDeleted() halves directory I/O per cycle
-     * and ensures the age check is applied consistently.
+     * Single-pass directory scan returning every pending execution and every stuck-deleted execution
+     * (a -deleted.msgpack file older than the configured stuckGrace period). The recovery scan decides
+     * which pending records are abandoned via the CoordinationStrategy — this returns them all.
      */
     public StoreScan scan() {
         if (!Files.exists(storeDir)) {
@@ -386,8 +178,6 @@ public class DurableStore {
         Instant stuckCutoff = Instant.now().minus(stuckGrace);
         Map<String, DurableExecution> pending = new LinkedHashMap<>();
         Map<String, DurableExecution> stuckDeleted = new LinkedHashMap<>();
-        Set<String> pendingIds = new HashSet<>();
-        List<String> leaseIds = new ArrayList<>();
         try (Stream<Path> files = Files.list(storeDir)) {
             files.forEach(file -> {
                 String name = file.getFileName().toString();
@@ -398,20 +188,11 @@ public class DurableStore {
                             DurableExecution execution = objectMapper.readValue(file.toFile(), DurableExecution.class);
                             stuckDeleted.put(execution.getExecutionId(), execution);
                         }
-                    } else if (name.endsWith(LEASE_SUFFIX)) {
-                        leaseIds.add(name.substring(0, name.length() - LEASE_SUFFIX.length()));
                     } else if (name.endsWith(PENDING_SUFFIX)) {
-                        String id = name.substring(0, name.length() - PENDING_SUFFIX.length());
-                        pendingIds.add(id);
-                        if (live.contains(id)) {
-                            return; // running in this process right now — not a crash to recover
-                        }
-                        if (isShared() && isLeaseHeld(id)) {
-                            return; // running on another instance whose lease is still valid
-                        }
                         DurableExecution execution = objectMapper.readValue(file.toFile(), DurableExecution.class);
                         pending.put(execution.getExecutionId(), execution);
                     }
+                    // {id}.lease (coordination) and {id}.tmp (transient) files are ignored here.
                 } catch (Exception e) {
                     log.warn("Skipping unreadable execution file {} ({})", name, e.getMessage());
                 }
@@ -419,34 +200,7 @@ public class DurableStore {
         } catch (IOException e) {
             log.error("Failed to list durable store directory {}", storeDir, e);
         }
-        if (isShared()) {
-            sweepOrphanLeases(leaseIds, pendingIds);
-        }
         return new StoreScan(pending, stuckDeleted);
-    }
-
-    /**
-     * Removes {id}.lease files whose pending record is gone (dead-lettered, committed, or the owner
-     * crashed before releasing) and whose lease has expired. An expired+orphaned lease is inert, but
-     * leaving it litters the directory; requiring expiry also avoids racing the acquireLease→save
-     * window where a lease legitimately exists for a record that has not been written yet.
-     */
-    private void sweepOrphanLeases(List<String> leaseIds, Set<String> pendingIds) {
-        Instant now = Instant.now();
-        for (String id : leaseIds) {
-            if (pendingIds.contains(id)) {
-                continue;
-            }
-            Path lease = storeDir.resolve(id + LEASE_SUFFIX);
-            try {
-                if (Files.getLastModifiedTime(lease).toInstant().plus(takeoverMargin()).isAfter(now)) {
-                    continue; // still valid — the owner may be mid-write of the record
-                }
-                Files.deleteIfExists(lease);
-            } catch (IOException e) {
-                log.warn("Failed to sweep orphaned lease {} ({})", id, e.getMessage());
-            }
-        }
     }
 
     private Map<String, DurableExecution> load(String suffix) {

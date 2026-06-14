@@ -2,6 +2,7 @@ package com.lafeir.durableexecutor.aspect;
 
 import com.lafeir.durableexecutor.DurableContext;
 import com.lafeir.durableexecutor.annotation.Durable;
+import com.lafeir.durableexecutor.coordination.CoordinationStrategy;
 import com.lafeir.durableexecutor.model.DurableExecution;
 import com.lafeir.durableexecutor.store.DurableStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,11 +39,14 @@ public class DurableAspect {
     public static final ThreadLocal<String> RECOVERY_EXECUTION_ID = new ThreadLocal<>();
 
     private final DurableStore store;
+    private final CoordinationStrategy coordination;
     private final ObjectMapper objectMapper;
     private final AsyncReturnPolicy asyncReturnPolicy;
 
-    public DurableAspect(DurableStore store, ObjectMapper objectMapper, AsyncReturnPolicy asyncReturnPolicy) {
+    public DurableAspect(DurableStore store, CoordinationStrategy coordination,
+                         ObjectMapper objectMapper, AsyncReturnPolicy asyncReturnPolicy) {
         this.store = store;
+        this.coordination = coordination;
         this.objectMapper = objectMapper;
         this.asyncReturnPolicy = asyncReturnPolicy;
     }
@@ -75,16 +79,16 @@ public class DurableAspect {
 
         String executionId = isRecovery ? recoveryId : resolveId(durable);
 
-        // Mark live before the record exists on disk and keep it marked until the close
+        // Mark running before the record exists on disk and keep it marked until the close
         // completes, so a concurrent recovery scan never mistakes this still-running
         // execution for an abandoned one and re-invokes it.
-        store.markLive(executionId);
+        coordination.markRunning(executionId);
         try {
             if (!isRecovery) {
-                // Lease before the record exists so a sharing instance can't see a leaseless
-                // pending file and reclaim it in the gap between save and lease (recovery claims
-                // the lease itself before re-invoking, so the recovery path skips this).
-                store.acquireLease(executionId);
+                // Acquire ownership before the record exists so a sharing instance can't see an
+                // unowned pending file and reclaim it in the gap between save and acquire (recovery
+                // claims ownership itself before re-invoking, so the recovery path skips this).
+                coordination.acquire(executionId);
                 store.save(buildRecord(joinPoint, executionId));
                 log.debug("Durable execution opened: {}", executionId);
             }
@@ -115,7 +119,7 @@ public class DurableAspect {
             // owner into handleFailedAttempt (save/delete) against a record it no longer owns. (Bounds
             // at-most-once *ownership*; a side effect already performed in the method body cannot be
             // undone here.)
-            if (store.isShared() && !store.stillOwn(executionId)) {
+            if (coordination.isMultiInstance() && !coordination.stillOwns(executionId)) {
                 log.warn("Durable execution {} lost its lease while running (this instance likely stalled); "
                         + "another instance is now authoritative — leaving the record untouched.", executionId);
                 return result;
@@ -167,8 +171,7 @@ public class DurableAspect {
             log.debug("Durable execution closed: {}", executionId);
             return result;
         } finally {
-            store.markNotLive(executionId);
-            store.releaseLease(executionId);
+            coordination.markStopped(executionId);
         }
     }
 
