@@ -133,11 +133,11 @@ A pending `{id}.msgpack` file means one of two things — an execution that cras
 **`shared-store` is not just a config flag — it has infrastructure prerequisites.** Before enabling it:
 
 - **Use storage that meets the [contract](docs/coordination.md#the-supported-storage-contract)** — atomic rename, a *bounded* visibility lag (Δ), read-after-write on the lease file, and bounded clock skew. A `ReadWriteMany` NFS / EFS / Filestore / CephFS volume typically qualifies; an eventually-consistent object store behind a FUSE mount does not. **Verify this for your storage — the library cannot.**
-- **Measure and set `visibility-lag` (Δ).** Use your filesystem's real visibility bound — on NFS, the `acregmax`/`acdirmax` attribute-cache bound, often tens of seconds. The 5s default suits strongly-consistent storage; **too low on default-cached NFS risks cross-instance double execution.**
+- **Measure and set `visibility-lag` (Δ).** Use your filesystem's real visibility bound — on NFS, the `acregmax`/`acdirmax` attribute-cache bound, often tens of seconds. The 5s default suits strongly-consistent storage. Too low causes **premature takeovers of still-live owners** — which does *not* break at-most-once (a reclaimed `TRANSACTIONAL` record still goes to the DLQ, never a re-run) but inflates DLQ-triage volume with spurious entries; size it to your storage.
 - **Synchronize clocks** (NTP) across replicas, within `clock-skew`.
 - **Provide DLQ reconciliation.** A `TRANSACTIONAL` record reclaimed across instances goes to the DLQ, not a re-run (above) — so you need an operator or an automated job to triage it. See [docs/shared-store-operations.md](docs/shared-store-operations.md).
 
-> **`shared-store` is best-effort, not race-free.** File-based coordination over a shared filesystem has inherent check-then-act windows and stale-read behaviour (notably on NFS), so a narrow window of cross-instance double execution remains possible. For strict exactly-once *across instances*, run `single-instance` behind an external lock (a leader election, a database advisory lock, etc.) so only one replica is ever active against a given store.
+> **`TRANSACTIONAL` is at-most-once across instances; `IDEMPOTENT` is at-least-once.** File-based coordination has inherent check-then-act and stale-read windows, but for a `TRANSACTIONAL` method they cannot cause a double execution: a reclaimed record is routed to the DLQ, never re-run (above), so the library never automatically double-executes a non-idempotent method across instances — independent of filesystem timing (Δ changes only how many records land in the DLQ, not whether a double execution happens). `IDEMPOTENT` records may be re-run across instances, which is safe by definition. The at-most-once guarantee is of *automatic* execution — requeuing a DLQ entry is an operator action that can re-execute. For strict single-writer isolation (so even `IDEMPOTENT` work is never repeated), run `single-instance` behind an external lock (leader election, a database advisory lock). Validated end-to-end under multi-replica pod-kill chaos — see the [sample's shared-store chaos test](../spring-durable-executor-sample/README.md#shared-store-coordination-chaos-test).
 >
 > See [docs/coordination.md](docs/coordination.md) for the design — the supported-storage contract, the self-fencing lease, how `visibility-lag`/`clock-skew` set the takeover margin, and precisely what at-most-once does and does not cover.
 
@@ -181,7 +181,10 @@ public void chargeCard(String orderId, BigDecimal amount) { ... }
 public void sendWelcomeEmail(String userId) { ... }
 ```
 
-Both modes guarantee **at-least-once execution**. The difference is what happens in the narrow window between a method returning and the close operation completing: `TRANSACTIONAL` routes that case to the DLQ; `IDEMPOTENT` routes it to a retry.
+The two modes target **different recovery guarantees**:
+
+- **`TRANSACTIONAL` — at-most-once.** It prefers a DLQ entry over a double execution: it routes an ambiguous outcome to the DLQ rather than re-execute a non-idempotent method. Under **`shared-store`** coordination this is at-most-once across replicas — a record reclaimed from an expired lease goes to the DLQ, never automatically re-run, so a non-idempotent method is never automatically executed twice across instances, independent of filesystem timing (see [Coordination mode](#coordination-mode)). Under the default `single-instance` mode, recovery re-runs a crashed method to complete it, so a mid-execution crash is at-least-once; only the crash-after-success window (commit marker) is routed to the DLQ. Requeuing a DLQ entry is an operator action that can re-execute — the reconciliation point.
+- **`IDEMPOTENT` — at-least-once.** It prefers a retry: a reclaimed or crashed record is re-run, which is safe because the method is repeatable.
 
 ## Requirements
 

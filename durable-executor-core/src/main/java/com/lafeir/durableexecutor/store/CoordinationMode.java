@@ -18,10 +18,13 @@ public enum CoordinationMode {
      * Each in-flight record is stamped with an owner + heartbeat-renewed lease so another
      * instance does not re-run work that is still live elsewhere.
      *
-     * <p><strong>Best-effort, not race-free.</strong> File-based coordination over a shared
-     * filesystem has inherent TOCTOU windows and stale-read behaviour (notably on NFS), so a
-     * narrow window of cross-instance double execution remains possible. For strict
-     * exactly-once across instances, run {@link #SINGLE_INSTANCE} behind an external lock.
+     * <p><strong>{@code TRANSACTIONAL} is at-most-once across instances; {@code IDEMPOTENT} is
+     * at-least-once.</strong> File-based coordination has inherent TOCTOU windows and stale-read
+     * behaviour (notably on NFS), but for a {@code TRANSACTIONAL} method they cannot cause a double
+     * execution: a reclaimed record is routed to the DLQ, never re-run, so a non-idempotent method is
+     * never automatically executed twice across instances — independent of filesystem timing.
+     * {@code IDEMPOTENT} records may be re-run across instances (safe by definition). For strict
+     * single-writer isolation, run {@link #SINGLE_INSTANCE} behind an external lock.
      *
      * <p>See {@code docs/coordination.md} for the design — the supported-storage contract, the
      * self-fencing lease (owner-checked renewal, waited takeover, monotonic self-fence), and

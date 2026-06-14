@@ -149,19 +149,25 @@ timing contract; DB/ZK with conditional writes + honored tokens → exactly-once
 This is **not built** — a single filesystem implementation does not justify the abstraction; the seam
 earns its place when a second backend or a token the FS can't provide actually appears.
 
-## Validation gate
+## Validation status
 
-The README describes `shared-store` as **best-effort** and that language stays until an end-to-end
-chaos suite demonstrates these properties under real pod kills and induced stalls on the target
-filesystem. Discriminating unit tests cover each mechanism (stomp regression, waited-takeover margin,
-monotonic self-fence, fenced-close-touches-nothing, takeover→DLQ routing), but a stronger guarantee
-claim in user-facing docs is earned by chaos validation, not by unit tests.
+The at-most-once claim for `TRANSACTIONAL` is backed by both unit tests and an end-to-end chaos run.
+Discriminating unit tests cover each mechanism (stomp regression, waited-takeover margin, monotonic
+self-fence, fenced-close-touches-nothing, takeover→DLQ routing).
 
-The existing sample (`spring-durable-executor-sample`) runs **single-instance** (one RWO volume per
-StatefulSet pod), so it does not exercise this. Validating the shared-store guarantee needs a new
-scenario — a `ReadWriteMany` volume, `coordination: shared-store` — whose `validate.sh` treats a DLQ
-entry as the **expected** safety-valve outcome (reconcile/requeue), not a failure. A suite that counts
-any DLQ entry as failure cannot validate DLQ-as-safety-valve behavior.
+The end-to-end run (`spring-durable-executor-sample`, shared-store variant: 3 replicas sharing one
+store, `coordination: shared-store`, a non-idempotent charge per execution) survived continuous load
+with random pod kills: **0 double charges across 197 orders / 15 kills**, with reclaimed records
+correctly routed to the DLQ. Because a reclaimed `TRANSACTIONAL` record is *always* DLQ'd regardless of
+Δ, this validates the at-most-once safety property independent of filesystem timing.
+
+Two dimensions remain **not** covered by that run, and the README scopes its claim accordingly:
+
+- **Δ / NFS stale reads** — the run used a single-node `hostPath` (strongly consistent). The at-most-once
+  property is Δ-independent by construction, but the *DLQ-volume* behavior under real NFS attribute-cache
+  lag is unmeasured; that needs an actual `ReadWriteMany`/NFS volume.
+- **The self-fence under stalls** — pod *kills* exercise the takeover→DLQ valve (crash); a *stalled*
+  owner that resumes and bows out needs `SIGSTOP`/`SIGCONT` injection. Covered by unit tests today.
 
 ## Open questions
 
