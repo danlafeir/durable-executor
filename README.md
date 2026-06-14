@@ -143,6 +143,19 @@ A pending `{id}.msgpack` file means one of two things — an execution that cras
 
 > **On takeover, non-idempotent records go to the DLQ, not a re-run.** When a `shared-store` instance reclaims a record whose lease has expired, it cannot tell whether the previous owner crashed or merely stalled. A `TRANSACTIONAL` (default) method is therefore routed to the [DLQ](#dead-letter-queue) for operator adjudication rather than re-executed — the library never automatically double-executes a non-idempotent method across instances. `IDEMPOTENT` methods are re-run. The trade-off: `TRANSACTIONAL` + `shared-store` is **not self-healing** — expect DLQ entries proportional to your crash/stall rate. See [docs/shared-store-operations.md](docs/shared-store-operations.md) for the triage model and how to reduce it. (`single-instance` recovery still re-runs `TRANSACTIONAL` on restart — there a restart unambiguously means the previous run ended.)
 
+#### Coordinating through an independent store (Redis, a database, …)
+
+Coordination is a pluggable `CoordinationStrategy`. To coordinate replicas through an independent store instead of lease files on the shared volume, supply your own bean — it overrides the built-in default:
+
+```java
+@Bean
+CoordinationStrategy coordinationStrategy(/* your Redis/DB client */) {
+    return new RedisCoordination(...); // extend AbstractLeaseCoordination, implement 5 primitives
+}
+```
+
+The record store stays on disk; only the *who-owns-what* decision moves to your backend. Extend `AbstractLeaseCoordination` so the monotonic self-fence and owner-checked renewal (the correctness-critical parts) are handled for you. See [docs/coordination-strategy.md](docs/coordination-strategy.md).
+
 ### Plain Spring (no Boot)
 
 ```java

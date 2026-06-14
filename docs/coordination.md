@@ -139,15 +139,23 @@ operator triage. Removing the operator from the loop would need one of:
   it. A plain filesystem cannot mint a strong token cheaply; a DB/Redis/ZK backend can — which is why
   this pairs naturally with the SPI below.
 
-## Held in reserve: the SPI seam
+## The SPI seam (built)
 
-Non-filesystem coordination (DB advisory lock, Redis, etcd/ZooKeeper, conditional writes) belongs
-behind a `CoordinationStrategy` SPI (`acquire / renew / release / isHeld / stillOwn / fenceToken`),
-with the file lease as one pluggable implementation and the recovery/close logic above it unchanged.
-The guarantee then scales to the primitive plugged in: plain FS → at-most-once ownership under the
-timing contract; DB/ZK with conditional writes + honored tokens → exactly-once ownership and effect.
-This is **not built** — a single filesystem implementation does not justify the abstraction; the seam
-earns its place when a second backend or a token the FS can't provide actually appears.
+Coordination is a `CoordinationStrategy` SPI; the record store (`DurableStore`) is pure file I/O. The
+file lease (`FileLeaseCoordination`) and the in-memory single-instance liveness
+(`SingleInstanceCoordination`) are two implementations, and non-filesystem coordination (a database
+lock, Redis, etcd/ZooKeeper) plugs in as a user-supplied `@Bean CoordinationStrategy` that overrides the
+default. The recovery/close/aspect logic above the seam is unchanged regardless of backend.
+
+The correctness-critical, backend-independent parts — the monotonic self-fence and owner-checked
+renewal — live in `AbstractLeaseCoordination`, so a backend implements only raw ownership primitives
+(`writeOwner`/`readOwner`/`removeOwner`/`tryClaim`/`isHeldByLiveOwner`) and cannot reintroduce the
+stall/stomp races. The guarantee then scales to the primitive plugged in: plain FS → at-most-once
+ownership under the timing contract; a DB/ZK backend with conditional writes + a downstream-honored
+fencing token → exactly-once ownership and effect (the token is the backend's and downstream's contract
+to add — the SPI neither requires nor provides it).
+
+See [coordination-strategy.md](coordination-strategy.md) for how to implement a backend.
 
 ## Validation status
 
