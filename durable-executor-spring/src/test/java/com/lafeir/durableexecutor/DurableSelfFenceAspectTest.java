@@ -20,6 +20,8 @@ import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -77,6 +79,23 @@ class DurableSelfFenceAspectTest {
 
         assertThat(store.loadAll())
                 .as("an owner that lost its lease mid-run must not commit or delete the record it no longer owns")
+                .containsKey("fenced-x");
+    }
+
+    @Test
+    void aFencedOwnerLeavesItsRecordUntouchedWithACasBackend() {
+        // The same fence as above but coordinating through a Redis/DB-style TTL+CAS backend — proves the
+        // aspect's open / self-fence / close wiring is backend-agnostic, not specific to file leases.
+        DurableStore store = store();
+        Map<String, InMemoryCasCoordination.Entry> shared = new ConcurrentHashMap<>();
+        CoordinationStrategy ours = new InMemoryCasCoordination("owner-A", Duration.ofSeconds(30), shared);
+        CoordinationStrategy intruder = new InMemoryCasCoordination("intruder", Duration.ofSeconds(30), shared);
+        Task proxy = proxy(store, ours, () -> intruder.acquire("fenced-x"));
+
+        proxy.process();
+
+        assertThat(store.loadAll())
+                .as("the close gate fences on any coordination backend, not just file leases")
                 .containsKey("fenced-x");
     }
 

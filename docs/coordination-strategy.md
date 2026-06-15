@@ -43,6 +43,9 @@ Notes:
 - **`tryClaim` is the only operation that must be atomic** (compare-and-set). It is the authoritative
   recovery race-winner; `isActive` is only a best-effort pre-filter, so it need not be atomic.
 - **`sweepBackend` can be a no-op** — entries with a TTL expire on their own; there is nothing to clean up.
+- If you implement the bare `CoordinationStrategy` interface directly (rather than extending the base),
+  a multi-instance strategy must return a non-zero `heartbeatInterval()` — the recovery loop schedules
+  the heartbeat at that period, so zero would busy-loop. `AbstractLeaseCoordination` handles this for you.
 
 ## Worked example
 
