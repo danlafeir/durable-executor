@@ -2,6 +2,8 @@
 
 Durable execution for JVM applications. Persists in-flight method invocations to disk so they survive process crashes and are automatically retried on next startup.
 
+New here? **[Why durable-executor?](docs/why.md)** covers the problem it solves and how it compares to message queues, workflow engines, and in-process retry.
+
 ## Modules
 
 | Module | Artifact | Description |
